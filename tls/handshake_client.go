@@ -18,6 +18,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"strconv"
 	"time"
 
@@ -523,6 +524,8 @@ func (c *Conn) clientHandshake() error {
 		session:      session,
 	}
 
+	fmt.Printf("CH/SH done, version %x suite %x", vers, suite)
+	os.Exit(0)
 	hs.finishedHash.Write(helloBytes)
 	hs.finishedHash.Write(hs.serverHello.marshal())
 
