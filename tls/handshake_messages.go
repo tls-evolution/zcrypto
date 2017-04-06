@@ -36,6 +36,7 @@ type clientHelloMsg struct {
 	unknownExtensions     [][]byte
 	keyShares             []keyShare
 	supportedVersions     []uint16
+	pskModes              []PSKMode
 }
 
 func (m *clientHelloMsg) equal(i interface{}) bool {
@@ -68,7 +69,8 @@ func (m *clientHelloMsg) equal(i interface{}) bool {
 		eqKeyShares(m.keyShares, m1.keyShares) &&
 		eqUint16s(m.supportedVersions, m1.supportedVersions) &&
 		eqStrings(m.alpnProtocols, m1.alpnProtocols) &&
-		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions)
+		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions) &&
+		eqPSKModes(m.pskModes, m1.pskModes)
 }
 
 func (m *clientHelloMsg) marshal() []byte {
@@ -151,6 +153,10 @@ func (m *clientHelloMsg) marshal() []byte {
 	}
 	if len(m.supportedVersions) > 0 {
 		extensionsLength += 1 + 2*len(m.supportedVersions)
+		numExtensions++
+	}
+	if len(m.pskModes) > 0 {
+		extensionsLength += 1 + len(m.pskModes)
 		numExtensions++
 	}
 	if numExtensions > 0 {
@@ -406,6 +412,20 @@ func (m *clientHelloMsg) marshal() []byte {
 			z[0] = byte(v >> 8)
 			z[1] = byte(v)
 			z = z[2:]
+		}
+	}
+	if len(m.pskModes) > 0 {
+		z[0] = byte(extensionPskModes >> 8)
+		z[1] = byte(extensionPskModes)
+		l := 1 + len(m.pskModes)
+		z[2] = byte(l >> 8)
+		z[3] = byte(l)
+		l -= 1
+		z[4] = byte(l)
+		z = z[5:]
+		for _, v := range m.pskModes {
+			z[0] = byte(v)
+			z = z[1:]
 		}
 	}
 
@@ -2115,6 +2135,18 @@ func eqUint16s(x, y []uint16) bool {
 }
 
 func eqCurveIDs(x, y []CurveID) bool {
+	if len(x) != len(y) {
+		return false
+	}
+	for i, v := range x {
+		if y[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func eqPSKModes(x, y []PSKMode) bool {
 	if len(x) != len(y) {
 		return false
 	}

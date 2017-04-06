@@ -456,6 +456,8 @@ func (c *Conn) clientHandshake() error {
 				ecdhePublic := elliptic.Marshal(curve, x, y)
 				hello.keyShares = append(hello.keyShares, keyShare{v, ecdhePublic})
 			}
+
+			hello.pskModes = append(hello.pskModes, PSKDHE)
 		}
 
 		helloBytes = hello.marshal()
