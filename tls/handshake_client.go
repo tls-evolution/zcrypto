@@ -320,6 +320,12 @@ func (c *Conn) clientHandshake() error {
 			return errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
 		}
 
+		// TODO correctly select nextProtos instead of this static selection
+		if c.config.maxVersion() >= VersionTLS13 {
+			c.config.NextProtos = append(c.config.NextProtos, "h2")
+			c.config.NextProtos = append(c.config.NextProtos, "http/1.1")
+		}
+
 		hello = &clientHelloMsg{
 			vers:                 c.config.maxVersion(),
 			compressionMethods:   []uint8{compressionNone},
