@@ -618,10 +618,8 @@ func (c *Conn) clientHandshake() error {
 			// hello.keyShares = append(hello.keyShares, keyShare{v, ecdhePublic})
 			// hello.pskModes = append(hello.pskModes, PSKDHE)
 			// hello.cookie = []byte{1, 2, 3, 4}
-			helloBytes = firefox_hello
-		} else {
-			helloBytes = hello.marshal()
 		}
+		helloBytes = hello.marshal()
 	}
 
 	c.handshakeLog = new(ServerHandshake)
