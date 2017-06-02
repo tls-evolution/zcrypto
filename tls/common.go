@@ -1385,3 +1385,18 @@ func (config *Config) MarshalJSON() ([]byte, error) {
 func (config *Config) UnmarshalJSON(b []byte) error {
 	panic("unimplemented")
 }
+
+var tls13notImplementedAbortErrorString = "TLS13notImplementedAbort"
+
+func tls13notImplementedAbortError() error {
+	return fmt.Errorf(tls13notImplementedAbortErrorString)
+}
+
+func IsTLS13notImplementedAbortError(e error) bool {
+	if len(e.Error()) >= len(tls13notImplementedAbortErrorString) {
+		if e.Error()[len(e.Error())-len(tls13notImplementedAbortErrorString):] == tls13notImplementedAbortErrorString {
+			return true
+		}
+	}
+	return false
+}
