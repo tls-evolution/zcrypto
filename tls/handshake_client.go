@@ -6,6 +6,7 @@ package tls
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"crypto/subtle"
 	"encoding/asn1"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +36,8 @@ type clientHandshakeState struct {
 	masterSecret    []byte
 	preMasterSecret []byte
 	session         *ClientSessionState
+	privKey         []byte
+	hash            crypto.Hash
 }
 
 type CacheKeyGenerator interface {
@@ -452,6 +456,7 @@ func (c *Conn) clientHandshake() error {
 		}
 
 		// TODO not part of cloudflares implementation
+		privKeys := make(map[CurveID][]byte)
 		if hello.vers >= VersionTLS13 {
 			hello.vers = VersionTLS12
 			hello.supportedVersions = append(hello.supportedVersions, VersionTLS13)
@@ -466,13 +471,14 @@ func (c *Conn) clientHandshake() error {
 					return errors.New("Unsupported curve")
 				}
 
-				_, x, y, err := elliptic.GenerateKey(curve, c.config.rand())
+				priv, x, y, err := elliptic.GenerateKey(curve, c.config.rand())
 				if err != nil {
 					return err
 				}
 
 				ecdhePublic := elliptic.Marshal(curve, x, y)
 				hello.keyShares = append(hello.keyShares, keyShare{v, ecdhePublic})
+				privKeys[v] = priv
 			}
 
 			hello.pskModes = append(hello.pskModes, PSKDHE)
@@ -482,8 +488,6 @@ func (c *Conn) clientHandshake() error {
 				// TODO cookie value must be copied from HelloRetryRequest
 				hello.cookie = []byte{1, 2, 3, 4}
 			}
-
-
 
 			// Here we set up the ClientHello as replay of a clientHello captured with Firefox Nightly
 			// The hex bytes in the comments represent the bytes of the captured Firefox Nightly TLS 1.3 ClientHello
@@ -547,14 +551,14 @@ func (c *Conn) clientHandshake() error {
 			// 	0x00, 0x19, // group 4
 			// 	0x01, 0x00, // group 5
 			// 	0x01, 0x01, // group 6
-			hello.supportedCurves = []CurveID{
-				0x001d,
-				0x0017,
-				0x0018,
-				0x0019,
-				0x0100,
-				0x0101,
-			}
+			//hello.supportedCurves = []CurveID{
+			//	0x001d,
+			//	0x0017,
+			//	0x0018,
+			//	0x0019,
+			//	0x0100,
+			//	0x0101,
+			//}
 
 			// 0x00, 0x0b, // ec point formats
 			// 	0x00, 0x02, // length
@@ -600,25 +604,25 @@ func (c *Conn) clientHandshake() error {
 			// 		0xaa, 0x5a, 0x81, 0x29, 0x84, 0x71, 0x33, 0x50, 0x31, 0x00, 0xaa, 0x7c, 0x74, 0xe0, 0x13, 0x06,
 			// 		0x15, 0xea, 0xd8, 0x69, 0x0d, 0x56, 0x72, 0xc7, 0xdb, 0xd0, 0x3e, 0x64, 0x8a, 0xd0, 0x8c, 0x99,
 			// 		0xdc, // key exchange
-			hello.keyShares = []keyShare{
-				keyShare{
-					0x001d, // uint16
-					[]byte{
-						0xfc, 0x53, 0xe7, 0x77, 0x32, 0xe2, 0xe0, 0x4d, 0xd3, 0xa6, 0x7e, 0x49, 0x1a, 0xb9, 0x09, 0x44,
-						0x20, 0xf1, 0xab, 0x30, 0x99, 0x6d, 0x3a, 0x5e, 0xf6, 0x74, 0xd7, 0xff, 0xa4, 0x6a, 0x39, 0x09,
-					},
-				},
-				keyShare{
-					0x0017, // uint16
-					[]byte{
-						0x04, 0x06, 0x32, 0x28, 0xe5, 0x49, 0xed, 0x69, 0x5e, 0x3f, 0x3e, 0xc4, 0x78, 0x26, 0xbc, 0xab,
-						0x63, 0xb3, 0x18, 0xf8, 0x1b, 0x94, 0x8a, 0xda, 0xaf, 0xe3, 0xa7, 0x57, 0xfe, 0x0c, 0xd0, 0x56,
-						0xaa, 0x5a, 0x81, 0x29, 0x84, 0x71, 0x33, 0x50, 0x31, 0x00, 0xaa, 0x7c, 0x74, 0xe0, 0x13, 0x06,
-						0x15, 0xea, 0xd8, 0x69, 0x0d, 0x56, 0x72, 0xc7, 0xdb, 0xd0, 0x3e, 0x64, 0x8a, 0xd0, 0x8c, 0x99,
-						0xdc,
-					},
-				},
-			}
+			//hello.keyShares = []keyShare{
+			//	keyShare{
+			//		0x001d, // uint16
+			//		[]byte{
+			//			0xfc, 0x53, 0xe7, 0x77, 0x32, 0xe2, 0xe0, 0x4d, 0xd3, 0xa6, 0x7e, 0x49, 0x1a, 0xb9, 0x09, 0x44,
+			//			0x20, 0xf1, 0xab, 0x30, 0x99, 0x6d, 0x3a, 0x5e, 0xf6, 0x74, 0xd7, 0xff, 0xa4, 0x6a, 0x39, 0x09,
+			//		},
+			//	},
+			//	keyShare{
+			//		0x0017, // uint16
+			//		[]byte{
+			//			0x04, 0x06, 0x32, 0x28, 0xe5, 0x49, 0xed, 0x69, 0x5e, 0x3f, 0x3e, 0xc4, 0x78, 0x26, 0xbc, 0xab,
+			//			0x63, 0xb3, 0x18, 0xf8, 0x1b, 0x94, 0x8a, 0xda, 0xaf, 0xe3, 0xa7, 0x57, 0xfe, 0x0c, 0xd0, 0x56,
+			//			0xaa, 0x5a, 0x81, 0x29, 0x84, 0x71, 0x33, 0x50, 0x31, 0x00, 0xaa, 0x7c, 0x74, 0xe0, 0x13, 0x06,
+			//			0x15, 0xea, 0xd8, 0x69, 0x0d, 0x56, 0x72, 0xc7, 0xdb, 0xd0, 0x3e, 0x64, 0x8a, 0xd0, 0x8c, 0x99,
+			//			0xdc,
+			//		},
+			//	},
+			//}
 
 			// 0x00, 0x2b, // supported version
 			// 	0x00, 0x09, // length
@@ -651,24 +655,24 @@ func (c *Conn) clientHandshake() error {
 			// 		0x02, 0x01, // algorithm 11
 			// TODO select only those supported by zlib
 			hello.signatureAndHashes = []signatureAndHash{
-				{ 0x03, 0x04 },
-				{ 0x03, 0x05 },
-				{ 0x03, 0x06 },
-				{ 0x04, 0x08 },
-				{ 0x05, 0x08 },
-				{ 0x06, 0x08 },
-				{ 0x01, 0x04 },
-				{ 0x01, 0x05 },
-				{ 0x01, 0x06 },
-				{ 0x03, 0x02 },
-				{ 0x01, 0x02 },
+				{0x03, 0x04},
+				{0x03, 0x05},
+				{0x03, 0x06},
+				{0x04, 0x08},
+				{0x05, 0x08},
+				{0x06, 0x08},
+				{0x01, 0x04},
+				{0x01, 0x05},
+				{0x01, 0x06},
+				{0x03, 0x02},
+				{0x01, 0x02},
 			}
 
 			// 0x00, 0x2d, // psk key exchange modes
 			// 	0x00, 0x02, // len
 			// 	0x01, // psk key exchange modes length
 			// 	0x01, // mode: PSK with (EC)DHE key establishment (psk_dhe_ke)
-			hello.pskModes = []PSKMode{ PSKDHE }
+			hello.pskModes = []PSKMode{PSKDHE}
 
 			// 0x00, 0x15, // padding
 			// 	0x00, 0xb9, // len
@@ -719,7 +723,7 @@ func (c *Conn) clientHandshake() error {
 	// is mainly a code duplication of the rest of this functions code
 	serverHello13, ok := msg.(*serverHelloMsg13)
 	if ok {
-		return c.clientHandshake13(serverHello13, session, hello, cacheKey)
+		return c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
 	}
 
 	serverHello, ok := msg.(*serverHelloMsg)
@@ -825,11 +829,15 @@ func (c *Conn) clientHandshake() error {
 	return nil
 }
 
-func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13, session *ClientSessionState, hello *clientHelloMsg, cacheKey string) error {
+func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
+	session *ClientSessionState,
+	hello *clientHelloMsg,
+	cacheKey string,
+	privKeys map[CurveID][]byte) error {
 
-	sessionCache := c.config.ClientSessionCache
+	//sessionCache := c.config.ClientSessionCache
 
-	c.handshakeLog.ServerHello = serverHello.MakeLog()
+	//c.handshakeLog.ServerHello = serverHello.MakeLog()
 
 	// if serverHello.heartbeatEnabled {
 	// 	c.heartbeat = true
@@ -865,72 +873,298 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13, session *ClientS
 		suite:         suite,
 		finishedHash:  newFinishedHash(c.vers, suite),
 		session:       session,
+		privKey:       privKeys[serverHello.keyShare.group],
+		hash:          hashForSuite(suite),
 	}
 
 	// stop here, send alert to peer letting him know that abort is not his fault
-	// fmt.Printf("CH/SH done, version %x suite %x\n", vers, suite)
-	c.sendAlert(alertInternalError)
+	fmt.Printf("CH/SH done, version %x suite %x\n", vers, suite)
+	//c.sendAlert(alertInternalError)
 	// TODO TLS 1.3 handshake not supported yet, aborting here
+	//return tls13notImplementedAbortError()
+
+	hs.finishedHash.Write(hs.hello.marshal())
+	hs.finishedHash.Write(hs.serverHello13.marshal())
+
+	hs.doFullHandshake13()
+	c.sendAlert(alertInternalError)
 	return tls13notImplementedAbortError()
 
-	hs.finishedHash.Write(helloBytes)
-	hs.finishedHash.Write(hs.serverHello.marshal())
+	//For now, no session resum
+	//isResume, err := hs.processServerHello()
+	//if err != nil {
+	//	return err
+	//}
 
-	isResume, err := hs.processServerHello()
+	//if isResume {
+	//if c.cipherError != nil {
+	//c.sendAlert(alertHandshakeFailure)
+	//return c.cipherError
+	//}
+	//if err := hs.establishKeys(); err != nil {
+	//return err
+	//}
+	//if err := hs.readSessionTicket(); err != nil {
+	//return err
+	//}
+	//if err := hs.readFinished(); err != nil {
+	//return err
+	//}
+	//if err := hs.sendFinished(); err != nil {
+	//return err
+	//}
+	//} else {
+	//if err := hs.doFullHandshake(); err != nil {
+	//return err
+	//}
+	//if err := hs.establishKeys(); err != nil {
+	//return err
+	//}
+	//if err := hs.sendFinished(); err != nil {
+	//return err
+	//}
+	//if err := hs.readSessionTicket(); err != nil {
+	//return err
+	//}
+	//if err := hs.readFinished(); err != nil {
+	//return err
+	//}
+	//}
+
+	//if hs.session == nil {
+	//c.handshakeLog.SessionTicket = nil
+	//} else {
+	//c.handshakeLog.SessionTicket = hs.session.MakeLog()
+	//}
+
+	//c.handshakeLog.KeyMaterial = hs.MakeLog()
+
+	//if sessionCache != nil && hs.session != nil && session != hs.session {
+	//sessionCache.Put(cacheKey, hs.session)
+	//}
+
+	//c.didResume = isResume
+	//c.handshakeComplete = true
+	//c.cipherSuite = suite.id
+	return nil
+
+}
+
+func hashForSuite(suite *cipherSuite) crypto.Hash {
+	if suite.flags&suiteSHA384 != 0 {
+		return crypto.SHA384
+	}
+	return crypto.SHA256
+}
+
+func (hs *clientHandshakeState) prepareCipher(secret []byte, label string, hashedMsg []byte) ([]byte, []byte, []byte) {
+	hash := hs.hash
+	trafficSecret := hkdfExpandLabel(hash, secret, label, hashedMsg, hash.Size())
+	key := hkdfExpandLabel(hash, trafficSecret, "key", nil, hs.suite.keyLen)
+	iv := hkdfExpandLabel(hash, trafficSecret, "iv", nil, hs.suite.ivLen)
+
+	return trafficSecret, key, iv
+}
+
+func deriveECDHSecret(ks keyShare, privateKey []byte) []byte {
+	//if ks.group == X25519 {
+	//if len(ks.data) != 32 {
+	//return nil
+	//}
+
+	//var theirPublic, sharedKey, scalar [32]byte
+	//copy(theirPublic[:], ks.data)
+	//copy(scalar[:], secretKey)
+	//curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
+	//return sharedKey[:]
+	//}
+
+	curve, ok := curveForCurveID(ks.group)
+	if !ok {
+		return nil
+	}
+	x, y := elliptic.Unmarshal(curve, ks.data)
+	if x == nil {
+		return nil
+	}
+	x, _ = curve.ScalarMult(x, y, privateKey)
+	xBytes := x.Bytes()
+	curveSize := (curve.Params().BitSize + 8 - 1) >> 3
+	if len(xBytes) == curveSize {
+		return xBytes
+	}
+	buf := make([]byte, curveSize)
+	copy(buf[len(buf)-len(xBytes):], xBytes)
+	return buf
+
+}
+
+func (hs *clientHandshakeState) hkdfExtract(secret, salt []byte) []byte {
+	return hkdfExtract(hs.hash, secret, salt)
+}
+
+func (hs *clientHandshakeState) hkdfExpandLabel(secret []byte, label string, hashValue []byte, length int) []byte {
+	//generate hkdfLabel
+	//
+	//hkdfLabel := make([]byte, 4+len("tls13")+len(label)+len(hashValue))
+	str := "TLS 1.3, "
+	hkdfLabel := make([]byte, 2+len(str)+len(label)+len(hashValue))
+	hkdfLabel[0] = byte(length >> 8)
+	hkdfLabel[1] = byte(length)
+	hkdfLabel[2] = byte(len(str) + len(label))
+	copy(hkdfLabel[3:], str)
+	z := hkdfLabel[3+len(str):]
+	copy(z, label)
+	if hashValue != nil {
+		z = z[len(label):]
+		//z[0] = byte(len(hashValue))
+		//copy(z[1:], hashValue)
+		copy(z, hashValue)
+	}
+
+	return hkdfExpand(hs.hash, secret, hkdfLabel, length)
+}
+
+func (hs *clientHandshakeState) hkdfExpandLabelDraft18(secret []byte, label string, hashValue []byte, length int) []byte {
+	str := "TLS 1.3, "
+	hkdfLabel := make([]byte, 4+len(str)+len(label)+len(hashValue))
+	hkdfLabel[0] = byte(length >> 8)
+	hkdfLabel[1] = byte(length)
+	hkdfLabel[2] = byte(len(str) + len(label))
+	copy(hkdfLabel[3:], str)
+	z := hkdfLabel[3+len(str):]
+	copy(z, label)
+	z = z[len(label):]
+	z[0] = byte(len(hashValue))
+	copy(z[1:], hashValue)
+
+	fmt.Printf("hkdfExpandLabelDraft18:\n%s\n", hex.Dump(hkdfLabel))
+
+	return hkdfExpand(hs.hash, secret, hkdfLabel, length)
+}
+
+func (hs *clientHandshakeState) deriveSecrete(secret []byte, label string, msg [][]byte) []byte {
+	hash := hs.hash
+	if msg == nil {
+		return hs.hkdfExpandLabelDraft18(secret, label, nil, hash.Size())
+	}
+
+	h := hash.New()
+	for i := 0; i < len(msg); i++ {
+		h.Write(msg[i])
+	}
+	return hs.hkdfExpandLabelDraft18(secret, label, h.Sum(nil), hash.Size())
+}
+
+func (hs *clientHandshakeState) doFullHandshake13() error {
+	/*hash := hashForSuite(hs.suite)
+	//hashSize := hash.Size()
+	//fmt.Println(hashSize)
+	//We now assume no resumption
+	earlySecret := hkdfExtract(hash, nil, nil)
+	xxx := hkdfExpand(hash, earlySecret, make([]byte, 1), hash.Size())
+	xxx1 := make([]byte, hash.Size())
+	hkdf := hkdf.New(hash.New, make([]byte, hash.Size()), nil, make([]byte, 1))
+	io.ReadFull(hkdf, xxx1)
+	fmt.Println("xxx", xxx, len(xxx))
+	fmt.Println("xxx1", xxx1, len(xxx1))
+	hs.finishedHash.Write(hs.hello.marshal())
+	handshakeCtx := hs.finishedHash.Sum()
+
+	hs.hkdfExpandLabel(nil, "1", nil, 1)
+
+	//	_, key, iv := hs.prepareCipher(earlySecret, "early", handshakeCtx)
+	ecdheSecret := deriveECDHSecret(hs.serverHello13.keyShare, hs.privKey)
+	//handshakeSecret := hkdfExtract(hash, ecdheSecret, deriveSecrete(hash, earlySecret, "derived", nil))
+	handshakeSecret := hkdfExtract(hash, ecdheSecret, earlySecret)
+	hs.finishedHash.Write(hs.serverHello13.marshal())
+	handshakeCtx = hs.finishedHash.Sum()
+
+	_, chsKey, chsIV := hs.prepareCipher(handshakeSecret, "c hs traffic", handshakeCtx)
+	_, shsKey, shsIV := hs.prepareCipher(handshakeSecret, "s hs traffic", handshakeCtx)
+
+	var clientCipher, serverCipher interface{}
+	var clientHash, serverHash macFunction
+	if hs.suite.cipher != nil {
+		clientCipher = hs.suite.cipher(chsKey, chsIV, false /* not for reading */
+	//clientHash = hs.suite.mac(c.vers, clientMAC)
+	/*		serverCipher = hs.suite.cipher(shsKey, shsIV, true /* for reading */
+	//serverHash = hs.suite.mac(c.vers, serverMAC)
+	/*	} else {
+			clientCipher = hs.suite.aead(chsKey, chsIV)
+			serverCipher = hs.suite.aead(shsKey, shsIV)
+		}
+
+		hs.c.in.prepareCipherSpec(hs.c.vers, serverCipher, serverHash)
+		hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
+
+		_, err := hs.c.readHandshake()
+		fmt.Printf("%v\n", hs.privKey)
+		if err != nil {
+			fmt.Println(err)
+		}*/
+
+	//fmt.Println(msg)
+
+	earlySecret := hs.hkdfExtract(nil, nil)
+	//tmpSecret := hs.deriveSecrete(earlySecret, "derived", nil)
+	ecdheSecret := deriveECDHSecret(hs.serverHello13.keyShare, hs.privKey)
+	handshakeSecret := hs.hkdfExtract(ecdheSecret, earlySecret)
+	msg := [][]byte{hs.hello.marshal(), hs.serverHello13.marshal()}
+	chsSecret := hs.deriveSecrete(handshakeSecret, "client handshake traffic secret", msg)
+	shsSecret := hs.deriveSecrete(handshakeSecret, "server handshake traffic secret", msg)
+	chsKey := hs.hkdfExpandLabelDraft18(chsSecret, "key", nil, hs.suite.keyLen)
+	chsIV := hs.hkdfExpandLabelDraft18(chsSecret, "iv", nil, 12)
+	shsKey := hs.hkdfExpandLabelDraft18(shsSecret, "key", nil, hs.suite.keyLen)
+	shsIV := hs.hkdfExpandLabelDraft18(shsSecret, "iv", nil, 12)
+	fmt.Println(chsKey, len(chsKey))
+	fmt.Println(shsKey, len(shsKey))
+	fmt.Println(chsIV, len(chsIV))
+	fmt.Println(shsIV, len(shsIV))
+	var clientCipher, serverCipher interface{}
+	var clientHash /*, serverHash*/ macFunction
+	if hs.suite.cipher != nil {
+		clientCipher = hs.suite.cipher(chsKey, chsIV, false /* not for reading */)
+		//clientHash = hs.suite.mac(c.vers, clientMAC)
+		serverCipher = hs.suite.cipher(shsKey, shsIV, true /* for reading */)
+		//serverHash = hs.suite.mac(c.vers, serverMAC)
+	} else {
+		clientCipher = hs.suite.aead(chsKey, chsIV)
+		serverCipher = hs.suite.aead(shsKey, shsIV)
+	}
+
+	hs.c.in.setCipher(hs.c.vers, serverCipher)
+	//hs.c.in.prepareCipherSpec(hs.c.vers, serverCipher, serverHash)
+	hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
+
+	//fmt.Println("1")
+	_, err := hs.c.readHandshake()
+	//fmt.Printf("%v\n", hs.privKey)
 	if err != nil {
-		return err
+		fmt.Println(err)
 	}
+	//if hs.c.rawInput == nil {
+	//hs.c.rawInput = hs.c.in.newBlock()
+	//}
+	//b := hs.c.rawInput
+	//recordHeaderLen := 5
+	//if err := b.readFromUntil(hs.c.conn, recordHeaderLen); err != nil {
+	//if e, ok := err.(net.Error); !ok || !e.Temporary() {
+	//hs.c.in.setErrorLocked(err)
+	//}
+	//return err
+	//}
+	//b, hs.c.rawInput = hs.c.in.splitBlock(b, 2*recordHeaderLen)
+	//copy(b.data[5:], b.data[0:5])
+	//ok, off, err := hs.c.in.decrypt(b)
+	//fmt.Println(ok, off, err)
+	//if !ok {
+	//hs.c.in.setErrorLocked(hs.c.sendAlert(err))
+	//}
+	//b.off = off
+	//data := b.data[b.off:]
+	//fmt.Println(hex.Dump(b.data))
 
-	if isResume {
-		if c.cipherError != nil {
-			c.sendAlert(alertHandshakeFailure)
-			return c.cipherError
-		}
-		if err := hs.establishKeys(); err != nil {
-			return err
-		}
-		if err := hs.readSessionTicket(); err != nil {
-			return err
-		}
-		if err := hs.readFinished(); err != nil {
-			return err
-		}
-		if err := hs.sendFinished(); err != nil {
-			return err
-		}
-	} else {
-		if err := hs.doFullHandshake(); err != nil {
-			return err
-		}
-		if err := hs.establishKeys(); err != nil {
-			return err
-		}
-		if err := hs.sendFinished(); err != nil {
-			return err
-		}
-		if err := hs.readSessionTicket(); err != nil {
-			return err
-		}
-		if err := hs.readFinished(); err != nil {
-			return err
-		}
-	}
-
-	if hs.session == nil {
-		c.handshakeLog.SessionTicket = nil
-	} else {
-		c.handshakeLog.SessionTicket = hs.session.MakeLog()
-	}
-
-	c.handshakeLog.KeyMaterial = hs.MakeLog()
-
-	if sessionCache != nil && hs.session != nil && session != hs.session {
-		sessionCache.Put(cacheKey, hs.session)
-	}
-
-	c.didResume = isResume
-	c.handshakeComplete = true
-	c.cipherSuite = suite.id
 	return nil
 }
 
@@ -1299,9 +1533,14 @@ func (hs *clientHandshakeState) serverResumedSession() bool {
 func (hs *clientHandshakeState) processServerHello() (bool, error) {
 	c := hs.c
 
+	if hs.serverHello == nil {
+		c.sendAlert(alertInternalError)
+		return false, errors.New("tls1.2: No proper server hello. The pointer is empty")
+	}
+
 	if hs.serverHello.compressionMethod != compressionNone {
 		c.sendAlert(alertUnexpectedMessage)
-		return false, errors.New("tls: server selected unsupported compression format")
+		return false, errors.New("tls1.2: server selected unsupported compression format")
 	}
 
 	clientDidNPN := hs.hello.nextProtoNeg

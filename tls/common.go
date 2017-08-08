@@ -69,7 +69,7 @@ const (
 	typeClientKeyExchange   uint8 = 16
 	typeFinished            uint8 = 20
 	typeCertificateStatus   uint8 = 22
-	typeNextProtocol        uint8 = 67  // Not IANA assigned
+	typeNextProtocol        uint8 = 67 // Not IANA assigned
 	// typeEncryptedExtensions uint8 = 203 // Not IANA assigned
 )
 
@@ -165,7 +165,7 @@ type keyShare struct {
 type PSKMode uint8
 
 const (
-	PSKKE PSKMode = 0
+	PSKKE  PSKMode = 0
 	PSKDHE PSKMode = 1
 )
 
@@ -718,6 +718,8 @@ func (c *Config) mutualVersion(vers uint16) (uint16, bool) {
 	minVersion := c.minVersion()
 	maxVersion := c.maxVersion()
 
+	fmt.Printf("server vers:%x\tminVersion:%x\tmaxVersion%x\n", vers, minVersion, maxVersion)
+
 	if vers < minVersion {
 		return 0, false
 	}
@@ -933,8 +935,8 @@ func defaultConfig() *Config {
 }
 
 var (
-	once                   sync.Once
-	varDefaultCipherSuites []uint16
+	once                        sync.Once
+	varDefaultCipherSuites      []uint16
 	varDefaultTLS13CipherSuites []uint16
 )
 

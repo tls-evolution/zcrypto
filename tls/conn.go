@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"encoding/hex"
 	"github.com/zmap/zcrypto/x509"
 )
 
@@ -162,6 +163,14 @@ func (hc *halfConn) prepareCipherSpec(version uint16, cipher interface{}, mac ma
 	hc.nextMac = mac
 }
 
+func (hc *halfConn) setCipher(version uint16, cipher interface{}) {
+	hc.version = version
+	hc.cipher = cipher
+	for i := range hc.seq {
+		hc.seq[i] = 0
+	}
+}
+
 // changeCipherSpec changes the encryption and MAC states
 // to the ones previously passed to prepareCipherSpec.
 func (hc *halfConn) changeCipherSpec() error {
@@ -294,8 +303,10 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 	if hc.cipher != nil {
 		switch c := hc.cipher.(type) {
 		case cipher.Stream:
+			fmt.Println("Stream")
 			c.XORKeyStream(payload, payload)
 		case *tlsAead:
+			fmt.Println("AEAD")
 			nonce := seq
 			if c.explicitNonce {
 				explicitIVLen = 8
@@ -316,12 +327,16 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 				additionalData[12] = byte(n)
 			}
 			var err error
+			fmt.Printf("tlsAead:payload:encrypted:\n%s", hex.Dump(payload))
+			fmt.Printf("nonce:\n%sadditionalData:\n%s", hex.Dump(nonce), hex.Dump(additionalData))
 			payload, err = c.Open(payload[:0], nonce, payload, additionalData)
+			fmt.Printf("tlsAead:payload:\n%s", hex.Dump(payload))
 			if err != nil {
 				return false, 0, alertBadRecordMAC
 			}
 			b.resize(recordHeaderLen + explicitIVLen + len(payload))
 		case cbcMode:
+			fmt.Println("cbcMode")
 			blockSize := c.BlockSize()
 			if hc.version >= VersionTLS11 {
 				explicitIVLen = blockSize
@@ -354,6 +369,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			// However, our behavior matches OpenSSL, so we leak
 			// only as much as they do.
 		default:
+			fmt.Println("unknown cipher type")
 			panic("unknown cipher type")
 		}
 	}
@@ -878,7 +894,11 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	}
 
 	data := c.hand.Bytes()
+	//fmt.Println(data)
+	//fmt.Println("2")
 	n := int(data[1])<<16 | int(data[2])<<8 | int(data[3])
+
+	//fmt.Println("here", data)
 	if n > maxHandshake {
 		return nil, c.in.setErrorLocked(c.sendAlert(alertInternalError))
 	}

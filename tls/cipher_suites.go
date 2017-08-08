@@ -16,6 +16,7 @@ import (
 	"crypto/sha512"
 	"hash"
 
+	"fmt"
 	"github.com/zmap/rc2"
 	"github.com/zmap/zcrypto/x509"
 )
@@ -364,6 +365,7 @@ func aeadAESGCM12(key, fixedNonce []byte) *tlsAead {
 }
 
 func aeadAESGCM13(key, fixedNonce []byte) *tlsAead {
+	fmt.Println("aeadAESGCM13:key:", key, ":fixedNonce:", fixedNonce)
 	aes, err := aes.NewCipher(key)
 	if err != nil {
 		panic(err)
