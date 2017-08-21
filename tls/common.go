@@ -90,6 +90,8 @@ const (
 	extensionExtendedMasterSecret uint16 = 23
 	extensionSessionTicket        uint16 = 35
 	extensionKeyShare             uint16 = 40
+	extensionPreSharedKey         uint16 = 41
+	extensionEarlyData            uint16 = 42
 	extensionSupportedVersions    uint16 = 43
 	extensionNextProtoNeg         uint16 = 13172 // not IANA assigned
 	extensionRenegotiationInfo    uint16 = 0xff01

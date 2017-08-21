@@ -175,7 +175,7 @@ func (m *clientHelloMsg) marshal() []byte {
 		length += 2 + extensionsLength
 
 		// Note: 4 byte for (type, length) at the beginning are added to length later on
-		if m.clientHelloPadding && (length + 4) < 512 {
+		if m.clientHelloPadding && (length+4) < 512 {
 			clientHelloPaddingLen = 512 - (length + 4)
 			extensionsLength += clientHelloPaddingLen
 			length += clientHelloPaddingLen
@@ -456,7 +456,7 @@ func (m *clientHelloMsg) marshal() []byte {
 		z[4] = byte(l >> 8)
 		z[5] = byte(l)
 		copy(z[6:], m.cookie)
-		z = z[6 + len(m.cookie):]
+		z = z[6+len(m.cookie):]
 	}
 	if m.clientHelloPadding {
 		z[0] = byte(extensionClientHelloPadding >> 8)
@@ -464,7 +464,7 @@ func (m *clientHelloMsg) marshal() []byte {
 		l := clientHelloPaddingLen
 		z[2] = byte(l >> 8)
 		z[3] = byte(l)
-		z = z[4 + clientHelloPaddingLen:] // bytes are already 0-initialized
+		z = z[4+clientHelloPaddingLen:] // bytes are already 0-initialized
 	}
 
 	m.raw = x
@@ -873,6 +873,7 @@ func (m *serverHelloMsg13) unmarshal(data []byte) bool {
 type encryptedExtensionsMsg struct {
 	raw          []byte
 	alpnProtocol string
+	earlyData    bool
 }
 
 func (m *encryptedExtensionsMsg) equal(i interface{}) bool {
@@ -934,41 +935,55 @@ func (m *encryptedExtensionsMsg) unmarshal(data []byte) bool {
 		return false
 	}
 	m.raw = data
-	l := int(data[4])<<8 | int(data[5])
-	if l != len(data)-6 {
-		return false
-	}
+
 	m.alpnProtocol = ""
-	if l == 0 {
-		return true
+	m.earlyData = false
+
+	extensionsLength := int(data[4])<<8 | int(data[5])
+	data = data[6:]
+	if len(data) != extensionsLength {
+		return false
 	}
 
-	d := data[6:]
-	if len(d) < 5 {
-		return false
+	for len(data) != 0 {
+		if len(data) < 4 {
+			return false
+		}
+		extension := uint16(data[0])<<8 | uint16(data[1])
+		length := int(data[2])<<8 | int(data[3])
+		data = data[4:]
+		if len(data) < length {
+			return false
+		}
+
+		switch extension {
+		case extensionALPN:
+			d := data[:length]
+			if len(d) < 3 {
+				return false
+			}
+			l := int(d[0])<<8 | int(d[1])
+			if l != len(d)-2 {
+				return false
+			}
+			d = d[2:]
+			l = int(d[0])
+			if l != len(d)-1 {
+				return false
+			}
+			d = d[1:]
+			if len(d) == 0 {
+				// ALPN protocols must not be empty.
+				return false
+			}
+			m.alpnProtocol = string(d)
+		case extensionEarlyData:
+			// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.8
+			m.earlyData = true
+		}
+
+		data = data[length:]
 	}
-	if uint16(d[0])<<8|uint16(d[1]) != extensionALPN {
-		return false
-	}
-	l = int(d[2])<<8 | int(d[3])
-	if l != len(d)-4 {
-		return false
-	}
-	l = int(d[4])<<8 | int(d[5])
-	if l != len(d)-6 {
-		return false
-	}
-	d = d[6:]
-	l = int(d[0])
-	if l != len(d)-1 {
-		return false
-	}
-	d = d[1:]
-	if len(d) == 0 {
-		// ALPN protocols must not be empty.
-		return false
-	}
-	m.alpnProtocol = string(d)
 
 	return true
 }

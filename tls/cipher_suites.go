@@ -343,6 +343,9 @@ func (f *xorNonceAEAD) Open(out, nonce, plaintext, additionalData []byte) ([]byt
 	for i, b := range nonce {
 		f.nonceMask[4+i] ^= b
 	}
+	if err != nil {
+		fmt.Println("xorNonceAEAD:Open:" + err.Error())
+	}
 
 	return result, err
 }
@@ -380,7 +383,8 @@ func aeadAESGCM13(key, fixedNonce []byte) *tlsAead {
 	// TODO original diff
 	// return ret
 	// TODO adapted diff
-	return &tlsAead{ret, true} // TODO is the nonce really explicit?
+	//return &tlsAead{ret, true} // TODO is the nonce really explicit?
+	return &tlsAead{ret, false}
 }
 
 func aeadCHACHA20POLY1305(key, fixedNonce []byte) *tlsAead {

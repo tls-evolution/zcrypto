@@ -1141,7 +1141,22 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	_, err := hs.c.readHandshake()
 	//fmt.Printf("%v\n", hs.privKey)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err.Error())
+	}
+
+	_, err = hs.c.readHandshake()
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	_, err = hs.c.readHandshake()
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	_, err = hs.c.readHandshake()
+	if err != nil {
+		fmt.Println(err.Error())
 	}
 	//if hs.c.rawInput == nil {
 	//hs.c.rawInput = hs.c.in.newBlock()

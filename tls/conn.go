@@ -309,7 +309,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			fmt.Println("AEAD")
 			nonce := seq
 			if c.explicitNonce {
-				explicitIVLen = 8
+				fmt.Println("explicitNonce")
 				if len(payload) < explicitIVLen {
 					return false, 0, alertBadRecordMAC
 				}
@@ -318,7 +318,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			}
 
 			var additionalData []byte
-			additionalData = make([]byte, 13, 13)
+			//additionalData = make([]byte, 13, 13)
 			if hc.version < VersionTLS13 {
 				copy(additionalData[:], seq)
 				copy(additionalData[8:], b.data[:3])
@@ -332,6 +332,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			payload, err = c.Open(payload[:0], nonce, payload, additionalData)
 			fmt.Printf("tlsAead:payload:\n%s", hex.Dump(payload))
 			if err != nil {
+				fmt.Println("error")
 				return false, 0, alertBadRecordMAC
 			}
 			b.resize(recordHeaderLen + explicitIVLen + len(payload))
@@ -894,7 +895,8 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	}
 
 	data := c.hand.Bytes()
-	//fmt.Println(data)
+	fmt.Println("conn.go:readHandShake:data:")
+	fmt.Println(data)
 	//fmt.Println("2")
 	n := int(data[1])<<16 | int(data[2])<<8 | int(data[3])
 
@@ -927,6 +929,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		}
 	case typeEncryptedExtensions:
 		m = new(encryptedExtensionsMsg)
+		fmt.Println("encryptedExtensionsMsg")
 	case typeNewSessionTicket:
 		m = new(newSessionTicketMsg)
 	case typeCertificate:
