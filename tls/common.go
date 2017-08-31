@@ -346,6 +346,25 @@ type ClientSessionState struct {
 	extendedMasterSecret bool                // Whether an extended master secret was used to generate the session
 }
 
+// SignatureScheme identifies a signature algorithm supported by TLS. See
+// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.3.
+type SignatureScheme uint16
+
+const (
+	PKCS1WithSHA1   SignatureScheme = 0x0201
+	PKCS1WithSHA256 SignatureScheme = 0x0401
+	PKCS1WithSHA384 SignatureScheme = 0x0501
+	PKCS1WithSHA512 SignatureScheme = 0x0601
+
+	PSSWithSHA256 SignatureScheme = 0x0804
+	PSSWithSHA384 SignatureScheme = 0x0805
+	PSSWithSHA512 SignatureScheme = 0x0806
+
+	ECDSAWithP256AndSHA256 SignatureScheme = 0x0403
+	ECDSAWithP384AndSHA384 SignatureScheme = 0x0503
+	ECDSAWithP521AndSHA512 SignatureScheme = 0x0603
+)
+
 // ClientSessionCache is a cache of ClientSessionState objects that can be used
 // by a client to resume a TLS session with a given server. ClientSessionCache
 // implementations should expect to be called concurrently from different

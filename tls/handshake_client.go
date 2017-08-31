@@ -1056,63 +1056,51 @@ func (hs *clientHandshakeState) deriveSecrete(secret []byte, label string, msg [
 	return hs.hkdfExpandLabelDraft18(secret, label, h.Sum(nil), hash.Size())
 }
 
+func sigSchemeToSigAndHash(s SignatureScheme) (sah signatureAndHash) {
+	sah.hash = byte(s >> 8)
+	sah.signature = byte(s)
+	return
+}
+
+func sigAndHashToSigScheme(sah signatureAndHash) SignatureScheme {
+	return SignatureScheme(sah.hash)<<8 | SignatureScheme(sah.signature)
+}
+
+func hashForSignatureScheme(ss SignatureScheme) crypto.Hash {
+	switch ss {
+	case PSSWithSHA256, ECDSAWithP256AndSHA256:
+		return crypto.SHA256
+	case PSSWithSHA384, ECDSAWithP384AndSHA384:
+		return crypto.SHA384
+	case PSSWithSHA512, ECDSAWithP521AndSHA512:
+		return crypto.SHA512
+	default:
+		panic("unsupported SignatureScheme passed to hashForSignatureScheme")
+	}
+}
+
+func signatureSchemeIsPSS(s SignatureScheme) bool {
+	return s == PSSWithSHA256 || s == PSSWithSHA384 || s == PSSWithSHA512
+}
+
+func prepareDigitallySigned(hash crypto.Hash, context string, data []byte) []byte {
+	message := bytes.Repeat([]byte{32}, 64)
+	message = append(message, context...)
+	message = append(message, 0)
+	message = append(message, data...)
+	h := hash.New()
+	h.Write(message)
+	return h.Sum(nil)
+}
+
 func (hs *clientHandshakeState) doFullHandshake13() error {
-	/*hash := hashForSuite(hs.suite)
-	//hashSize := hash.Size()
-	//fmt.Println(hashSize)
-	//We now assume no resumption
-	earlySecret := hkdfExtract(hash, nil, nil)
-	xxx := hkdfExpand(hash, earlySecret, make([]byte, 1), hash.Size())
-	xxx1 := make([]byte, hash.Size())
-	hkdf := hkdf.New(hash.New, make([]byte, hash.Size()), nil, make([]byte, 1))
-	io.ReadFull(hkdf, xxx1)
-	fmt.Println("xxx", xxx, len(xxx))
-	fmt.Println("xxx1", xxx1, len(xxx1))
-	hs.finishedHash.Write(hs.hello.marshal())
-	handshakeCtx := hs.finishedHash.Sum()
-
-	hs.hkdfExpandLabel(nil, "1", nil, 1)
-
-	//	_, key, iv := hs.prepareCipher(earlySecret, "early", handshakeCtx)
-	ecdheSecret := deriveECDHSecret(hs.serverHello13.keyShare, hs.privKey)
-	//handshakeSecret := hkdfExtract(hash, ecdheSecret, deriveSecrete(hash, earlySecret, "derived", nil))
-	handshakeSecret := hkdfExtract(hash, ecdheSecret, earlySecret)
-	hs.finishedHash.Write(hs.serverHello13.marshal())
-	handshakeCtx = hs.finishedHash.Sum()
-
-	_, chsKey, chsIV := hs.prepareCipher(handshakeSecret, "c hs traffic", handshakeCtx)
-	_, shsKey, shsIV := hs.prepareCipher(handshakeSecret, "s hs traffic", handshakeCtx)
-
-	var clientCipher, serverCipher interface{}
-	var clientHash, serverHash macFunction
-	if hs.suite.cipher != nil {
-		clientCipher = hs.suite.cipher(chsKey, chsIV, false /* not for reading */
-	//clientHash = hs.suite.mac(c.vers, clientMAC)
-	/*		serverCipher = hs.suite.cipher(shsKey, shsIV, true /* for reading */
-	//serverHash = hs.suite.mac(c.vers, serverMAC)
-	/*	} else {
-			clientCipher = hs.suite.aead(chsKey, chsIV)
-			serverCipher = hs.suite.aead(shsKey, shsIV)
-		}
-
-		hs.c.in.prepareCipherSpec(hs.c.vers, serverCipher, serverHash)
-		hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
-
-		_, err := hs.c.readHandshake()
-		fmt.Printf("%v\n", hs.privKey)
-		if err != nil {
-			fmt.Println(err)
-		}*/
-
-	//fmt.Println(msg)
-
 	earlySecret := hs.hkdfExtract(nil, nil)
 	//tmpSecret := hs.deriveSecrete(earlySecret, "derived", nil)
 	ecdheSecret := deriveECDHSecret(hs.serverHello13.keyShare, hs.privKey)
 	handshakeSecret := hs.hkdfExtract(ecdheSecret, earlySecret)
-	msg := [][]byte{hs.hello.marshal(), hs.serverHello13.marshal()}
-	chsSecret := hs.deriveSecrete(handshakeSecret, "client handshake traffic secret", msg)
-	shsSecret := hs.deriveSecrete(handshakeSecret, "server handshake traffic secret", msg)
+	contex := [][]byte{hs.hello.marshal(), hs.serverHello13.marshal()}
+	chsSecret := hs.deriveSecrete(handshakeSecret, "client handshake traffic secret", contex)
+	shsSecret := hs.deriveSecrete(handshakeSecret, "server handshake traffic secret", contex)
 	chsKey := hs.hkdfExpandLabelDraft18(chsSecret, "key", nil, hs.suite.keyLen)
 	chsIV := hs.hkdfExpandLabelDraft18(chsSecret, "iv", nil, 12)
 	shsKey := hs.hkdfExpandLabelDraft18(shsSecret, "key", nil, hs.suite.keyLen)
@@ -1138,49 +1126,195 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
 
 	//fmt.Println("1")
-	_, err := hs.c.readHandshake()
+	//extensions
+	msg, err := hs.c.readHandshake()
 	//fmt.Printf("%v\n", hs.privKey)
 	if err != nil {
 		fmt.Println(err.Error())
 	}
 
-	_, err = hs.c.readHandshake()
+	encryptedExtensions, ok := msg.(*encryptedExtensionsMsg)
+	if !ok {
+		//TODO
+	}
+
+	contex = append(contex, encryptedExtensions.marshal())
+
+	//certificate
+	msg, err = hs.c.readHandshake()
 	if err != nil {
 		fmt.Println(err.Error())
+	}
+
+	certificate, ok := msg.(*certificateMsg13)
+	var cert *x509.Certificate
+	if ok {
+		if cert, err = hs.onReadCertificateMsg13(certificate); err != nil {
+			return err
+		}
+	}
+
+	contex = append(contex, certificate.marshal())
+
+	msg, err = hs.c.readHandshake()
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	certificateVerify, ok := msg.(*certificateVerifyMsg)
+	if ok {
+		sigScheme := sigAndHashToSigScheme(certificateVerify.signatureAndHash)
+		fmt.Printf("sigScheme: %x\n", sigScheme)
+		sigHash := hashForSignatureScheme(sigScheme)
+		transHash := hs.hash.New()
+		for i := 0; i < len(contex); i++ {
+			transHash.Write(contex[i])
+		}
+		content := transHash.Sum(nil)
+		expected := prepareDigitallySigned(sigHash, "TLS 1.3, server CertificateVerify", content)
+		//cert, err := x509.ParseCertificate(certificate.certificates[0])
+		//if err == nil {
+		pk := cert.PublicKey
+		if rsaPk, ok := pk.(*rsa.PublicKey); ok {
+			var err error
+			if signatureSchemeIsPSS(sigScheme) {
+				opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: sigHash}
+				err = rsa.VerifyPSS(rsaPk, sigHash, expected, certificateVerify.signature, opts)
+			} else {
+				err = rsa.VerifyPKCS1v15(rsaPk, sigHash, expected, certificateVerify.signature)
+			}
+
+			if err != nil {
+				hs.c.sendAlert(alertDecryptError)
+				return errors.New("tls:certificateVerifyMsg:rsa:fail to verify certificate")
+			}
+		} else if ecdsaPk, ok := pk.(*ecdsa.PublicKey); ok {
+			if !ecdsaVerifyMessage(ecdsaPk, expected, certificateVerify.signature) {
+				hs.c.sendAlert(alertDecryptError)
+				return errors.New("tls:certificateVerifyMsg:ecdsa:fail to verify certificate")
+			}
+		} else if pk, ok := pk.(*x509.AugmentedECDSA); ok {
+			publicKey := pk.Pub
+			if !ecdsaVerifyMessage(publicKey, expected, certificateVerify.signature) {
+				hs.c.sendAlert(alertDecryptError)
+				return errors.New("tls:certificateVerifyMsg:x509.AugmentedECDSA:fail to verify certificate")
+			}
+		} else {
+			hs.c.sendAlert(alertDecryptError)
+			return errors.New("tls:certificateVerifyMsg:unsupported certificate")
+		}
+		//} else {
+		//fmt.Println(err.Error())
+		//}
+		fmt.Println(expected)
 	}
 
 	_, err = hs.c.readHandshake()
 	if err != nil {
 		fmt.Println(err.Error())
 	}
-
-	_, err = hs.c.readHandshake()
-	if err != nil {
-		fmt.Println(err.Error())
-	}
-	//if hs.c.rawInput == nil {
-	//hs.c.rawInput = hs.c.in.newBlock()
-	//}
-	//b := hs.c.rawInput
-	//recordHeaderLen := 5
-	//if err := b.readFromUntil(hs.c.conn, recordHeaderLen); err != nil {
-	//if e, ok := err.(net.Error); !ok || !e.Temporary() {
-	//hs.c.in.setErrorLocked(err)
-	//}
-	//return err
-	//}
-	//b, hs.c.rawInput = hs.c.in.splitBlock(b, 2*recordHeaderLen)
-	//copy(b.data[5:], b.data[0:5])
-	//ok, off, err := hs.c.in.decrypt(b)
-	//fmt.Println(ok, off, err)
-	//if !ok {
-	//hs.c.in.setErrorLocked(hs.c.sendAlert(err))
-	//}
-	//b.off = off
-	//data := b.data[b.off:]
-	//fmt.Println(hex.Dump(b.data))
-
 	return nil
+}
+
+func ecdsaVerifyMessage(pub *ecdsa.PublicKey, expected []byte, sign []byte) bool {
+	var rs ecdsaSignature
+
+	if _, err := asn1.Unmarshal(sign, &rs); err != nil {
+		return false
+	}
+
+	return ecdsa.Verify(pub, expected, rs.R, rs.S)
+}
+
+func (hs *clientHandshakeState) onReadCertificateMsg13(certMsg *certificateMsg13) (*x509.Certificate, error) {
+	c := hs.c
+	var err error
+	var serverCert *x509.Certificate
+
+	isAnon := hs.suite != nil && (hs.suite.flags&suiteAnon > 0)
+
+	if !isAnon {
+
+		//if len(certMsg.certificates) == 0 {
+		//c.sendAlert(alertUnexpectedMessage)
+		//return unexpectedMessageError(certMsg, *handshakeMessage(certMsg))
+		//}
+		//hs.finishedHash.Write(certMsg.marshal())
+
+		certs := make([]*x509.Certificate, len(certMsg.certificates))
+		invalidCert := false
+		var invalidCertErr error
+		for i, asn1Data := range certMsg.certificates {
+			cert, err := x509.ParseCertificate(asn1Data)
+			if err != nil {
+				invalidCert = true
+				invalidCertErr = err
+				break
+			}
+			certs[i] = cert
+		}
+
+		c.handshakeLog.ServerCertificates = certMsg.MakeLog()
+
+		if !invalidCert {
+			opts := x509.VerifyOptions{
+				Roots:         c.config.RootCAs,
+				CurrentTime:   c.config.time(),
+				DNSName:       c.config.ServerName,
+				Intermediates: x509.NewCertPool(),
+			}
+
+			// Always check validity of the certificates
+			for _, cert := range certs {
+				/*
+					if i == 0 {
+						continue
+					}
+				*/
+				opts.Intermediates.AddCert(cert)
+			}
+			var validation *x509.Validation
+			c.verifiedChains, validation, err = certs[0].ValidateWithStupidDetail(opts)
+			c.handshakeLog.ServerCertificates.addParsed(certs, validation)
+
+			// If actually verifying and invalid, reject
+			if !c.config.InsecureSkipVerify {
+				if err != nil {
+					c.sendAlert(alertBadCertificate)
+					return serverCert, err
+				}
+			}
+		}
+
+		if invalidCert {
+			c.sendAlert(alertBadCertificate)
+			return serverCert, errors.New("tls: failed to parse certificate from server: " + invalidCertErr.Error())
+		}
+
+		c.peerCertificates = certs
+
+		serverCert = certs[0]
+
+		var supportedCertKeyType bool
+		switch serverCert.PublicKey.(type) {
+		case *rsa.PublicKey, *ecdsa.PublicKey, *x509.AugmentedECDSA:
+			supportedCertKeyType = true
+			break
+		case *dsa.PublicKey:
+			if c.config.ClientDSAEnabled {
+				supportedCertKeyType = true
+			}
+		default:
+			break
+		}
+
+		if !supportedCertKeyType {
+			c.sendAlert(alertUnsupportedCertificate)
+			return serverCert, fmt.Errorf("tls: server's certificate contains an unsupported type of public key: %T", serverCert.PublicKey)
+		}
+	}
+
+	return serverCert, nil
 }
 
 func (hs *clientHandshakeState) doFullHandshake() error {

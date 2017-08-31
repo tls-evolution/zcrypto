@@ -376,6 +376,24 @@ func (m *serverHelloMsg13) MakeLog() *ServerHello {
 	return sh
 }
 
+func (m *certificateMsg13) MakeLog() *Certificates {
+	sc := new(Certificates)
+	if len(m.certificates) >= 1 {
+		cert := m.certificates[0]
+		sc.Certificate.Raw = make([]byte, len(cert))
+		copy(sc.Certificate.Raw, cert)
+	}
+	if len(m.certificates) >= 2 {
+		chain := m.certificates[1:]
+		sc.Chain = make([]SimpleCertificate, len(chain))
+		for idx, cert := range chain {
+			sc.Chain[idx].Raw = make([]byte, len(cert))
+			copy(sc.Chain[idx].Raw, cert)
+		}
+	}
+	return sc
+}
+
 func (m *certificateMsg) MakeLog() *Certificates {
 	sc := new(Certificates)
 	if len(m.certificates) >= 1 {
