@@ -10,6 +10,7 @@ import (
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/subtle"
 	"encoding/asn1"
@@ -887,8 +888,8 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 	hs.finishedHash.Write(hs.serverHello13.marshal())
 
 	hs.doFullHandshake13()
-	c.sendAlert(alertInternalError)
-	return tls13notImplementedAbortError()
+	//c.sendAlert(alertInternalError)
+	//return tls13notImplementedAbortError()
 
 	//For now, no session resum
 	//isResume, err := hs.processServerHello()
@@ -1206,14 +1207,86 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 		//} else {
 		//fmt.Println(err.Error())
 		//}
-		fmt.Println(expected)
+		//fmt.Println(expected)
 	}
 
-	_, err = hs.c.readHandshake()
+	contex = append(contex, certificateVerify.marshal())
+
+	msg, err = hs.c.readHandshake()
 	if err != nil {
 		fmt.Println(err.Error())
 	}
+
+	serverFinished, ok := msg.(*finishedMsg)
+	if !ok {
+		hs.c.sendAlert(alertUnexpectedMessage)
+		return unexpectedMessageError(serverFinished, msg)
+	}
+
+	//Verify server finished msg
+	server_finished_key := hs.hkdfExpandLabelDraft18(shsSecret, "finished", nil, hs.hash.Size())
+	expectedVerifyData := hmacOfFinishedMsg(hs.hash, server_finished_key, contex)
+	if len(expectedVerifyData) != len(serverFinished.verifyData) ||
+		subtle.ConstantTimeCompare(expectedVerifyData, serverFinished.verifyData) != 1 {
+		hs.c.sendAlert(alertDecryptError)
+		fmt.Println("expectedVerifyData")
+		fmt.Println(expectedVerifyData)
+		fmt.Println("serverFinished.expectedVerifyData")
+		fmt.Println(serverFinished.verifyData)
+		return errors.New("tls: client's Finished message is incorrect")
+	}
+
+	contex = append(contex, serverFinished.marshal())
+
+	//Compute applicate triffic keys
+	masterSecret := hs.hkdfExtract(nil, handshakeSecret)
+	clientTrafficSecret0 := hs.deriveSecrete(masterSecret, "client application traffic secret", contex)
+	serverTrafficSecret0 := hs.deriveSecrete(masterSecret, "server application traffic secret", contex)
+
+	clientAppKey := hs.hkdfExpandLabelDraft18(clientTrafficSecret0, "key", nil, hs.suite.keyLen)
+	clientAppIV := hs.hkdfExpandLabelDraft18(clientTrafficSecret0, "iv", nil, 12)
+	serverAppKey := hs.hkdfExpandLabelDraft18(serverTrafficSecret0, "key", nil, hs.suite.keyLen)
+	serverAppIV := hs.hkdfExpandLabelDraft18(serverTrafficSecret0, "iv", nil, 12)
+
+	if hs.suite.cipher != nil {
+		clientCipher = hs.suite.cipher(clientAppKey, clientAppIV, false /* not for reading */)
+		serverCipher = hs.suite.cipher(serverAppKey, serverAppIV, true /* for reading */)
+	} else {
+		clientCipher = hs.suite.aead(clientAppKey, clientAppIV)
+		serverCipher = hs.suite.aead(serverAppKey, serverAppIV)
+	}
+
+	//TODO client certificate & certificateVerify
+
+	//Send client finished msg
+	client_finished_key := hs.hkdfExpandLabelDraft18(chsSecret, "finished", nil, hs.hash.Size())
+	clientFinishedVerifyData := hmacOfFinishedMsg(hs.hash, client_finished_key, contex)
+	clientFinished := &finishedMsg{verifyData: clientFinishedVerifyData}
+	hs.c.out.changeCipherSpec()
+	if _, err := hs.c.writeRecord(recordTypeHandshake, clientFinished.marshal()); err != nil {
+		return err
+	}
+
+	//set application key
+	if hs.c.hand.Len() > 0 {
+		return hs.c.sendAlert(alertUnexpectedMessage)
+	}
+
+	hs.c.in.setCipher(hs.c.vers, serverCipher)
+	hs.c.out.setCipher(hs.c.vers, clientCipher)
+
 	return nil
+}
+
+func hmacOfFinishedMsg(f crypto.Hash, key []byte, msgs [][]byte) []byte {
+	h := hmac.New(f.New, key)
+	hash := f.New()
+	for i := 0; i < len(msgs); i++ {
+		hash.Write(msgs[i])
+	}
+	h.Write(hash.Sum(nil))
+
+	return h.Sum(nil)
 }
 
 func ecdsaVerifyMessage(pub *ecdsa.PublicKey, expected []byte, sign []byte) bool {
@@ -1315,6 +1388,10 @@ func (hs *clientHandshakeState) onReadCertificateMsg13(certMsg *certificateMsg13
 	}
 
 	return serverCert, nil
+}
+
+func (hs *clientHandshakeState) onReadServerFinished(serverFinished *finishedMsg) error {
+	return nil
 }
 
 func (hs *clientHandshakeState) doFullHandshake() error {
