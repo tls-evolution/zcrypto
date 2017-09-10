@@ -724,7 +724,9 @@ func (c *Conn) clientHandshake() error {
 	// is mainly a code duplication of the rest of this functions code
 	serverHello13, ok := msg.(*serverHelloMsg13)
 	if ok {
-		return c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
+		err := c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
+		fmt.Println("handshake13 finished")
+		return err
 	}
 
 	serverHello, ok := msg.(*serverHelloMsg)
@@ -1111,7 +1113,7 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	fmt.Println(chsIV, len(chsIV))
 	fmt.Println(shsIV, len(shsIV))
 	var clientCipher, serverCipher interface{}
-	var clientHash /*, serverHash*/ macFunction
+	//var /*clientHash*/ /*, serverHash*/ macFunction
 	if hs.suite.cipher != nil {
 		clientCipher = hs.suite.cipher(chsKey, chsIV, false /* not for reading */)
 		//clientHash = hs.suite.mac(c.vers, clientMAC)
@@ -1124,7 +1126,8 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 
 	hs.c.in.setCipher(hs.c.vers, serverCipher)
 	//hs.c.in.prepareCipherSpec(hs.c.vers, serverCipher, serverHash)
-	hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
+	//hs.c.out.prepareCipherSpec(hs.c.vers, clientCipher, clientHash)
+	hs.c.out.setCipher(hs.c.vers, clientCipher)
 
 	//fmt.Println("1")
 	//extensions
@@ -1262,7 +1265,9 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	client_finished_key := hs.hkdfExpandLabelDraft18(chsSecret, "finished", nil, hs.hash.Size())
 	clientFinishedVerifyData := hmacOfFinishedMsg(hs.hash, client_finished_key, contex)
 	clientFinished := &finishedMsg{verifyData: clientFinishedVerifyData}
-	hs.c.out.changeCipherSpec()
+	fmt.Printf("%s\n", hex.Dump(clientFinished.marshal()))
+	//hs.c.out.changeCipherSpec()
+	fmt.Println("here")
 	if _, err := hs.c.writeRecord(recordTypeHandshake, clientFinished.marshal()); err != nil {
 		return err
 	}
@@ -1274,6 +1279,9 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 
 	hs.c.in.setCipher(hs.c.vers, serverCipher)
 	hs.c.out.setCipher(hs.c.vers, clientCipher)
+	hs.c.handshakeComplete = true
+	//hs.c.writeRecord(recordTypeChangeCipherSpec, []byte{1})
+	//hs.c.sendAlert(alertInternalError)
 
 	return nil
 }

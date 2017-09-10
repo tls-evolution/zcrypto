@@ -19,6 +19,7 @@ import (
 
 	"encoding/hex"
 	"github.com/zmap/zcrypto/x509"
+	"runtime/debug"
 )
 
 // A Conn represents a secured connection.
@@ -318,8 +319,8 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			}
 
 			var additionalData []byte
-			//additionalData = make([]byte, 13, 13)
 			if hc.version < VersionTLS13 {
+				additionalData = make([]byte, 13, 13)
 				copy(additionalData[:], seq)
 				copy(additionalData[8:], b.data[:3])
 				n := len(payload) - c.Overhead()
@@ -454,8 +455,8 @@ func (hc *halfConn) encrypt(b *block, explicitIVLen int) (bool, alert) {
 			payload = payload[:payloadLen]
 
 			var additionalData []byte
-			additionalData = make([]byte, 13, 13)
 			if hc.version < VersionTLS13 {
+				additionalData = make([]byte, 13, 13)
 				copy(additionalData[:], hc.seq[:])
 				copy(additionalData[8:], b.data[:3])
 				additionalData[11] = byte(payloadLen >> 8)
@@ -752,7 +753,11 @@ Again:
 
 	case recordTypeHandshake:
 		// TODO(rsc): Should at least pick off connection close.
-		if typ != want {
+		if c.handshakeComplete && want == recordTypeApplicationData {
+			//TODO Post-handshake messages
+		} else if typ != want {
+			fmt.Println("conn.go:readRecord:757:")
+			fmt.Printf("%s\n", hex.Dump(data))
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
 		}
 		c.hand.Write(data)
@@ -836,14 +841,27 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (n int, err error) {
 		}
 		b.resize(recordHeaderLen + explicitIVLen + m)
 		b.data[0] = byte(typ)
+		fmt.Printf("conn.go:writeRecord:839:type:%d\n", typ)
+		if typ == recordTypeAlert {
+			debug.PrintStack()
+		}
 		vers := c.vers
 		if vers == 0 {
 			// Some TLS servers fail if the record version is
 			// greater than TLS 1.0 for the initial ClientHello.
 			vers = VersionTLS10
 		}
-		b.data[1] = byte(vers >> 8)
-		b.data[2] = byte(vers)
+
+		//draft-ietf-tls-rfc5246 section 5.1
+		//legacy_record_version MUST be 0x0301 for TLS 1.3
+		if vers == VersionTLS13 {
+			b.data[1] = 3
+			b.data[2] = 1
+		} else {
+			b.data[1] = byte(vers >> 8)
+			b.data[2] = byte(vers)
+		}
+		b.data[2] = 1
 		b.data[3] = byte(m >> 8)
 		b.data[4] = byte(m)
 		if explicitIVLen > 0 {
