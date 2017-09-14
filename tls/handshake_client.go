@@ -724,6 +724,7 @@ func (c *Conn) clientHandshake() error {
 	// is mainly a code duplication of the rest of this functions code
 	serverHello13, ok := msg.(*serverHelloMsg13)
 	if ok {
+		c.handshakeLog.ServerHello = serverHello13.MakeLog()
 		err := c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
 		fmt.Println("handshake13 finished")
 		return err

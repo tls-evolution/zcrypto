@@ -807,6 +807,10 @@ func (c *Conn) sendAlert(err alert) error {
 // c.out.Mutex <= L.
 func (c *Conn) writeRecord(typ recordType, data []byte) (n int, err error) {
 
+	if typ == recordTypeApplicationData {
+		fmt.Printf("Client Send:\n%s\n", hex.Dump(data))
+		debug.PrintStack()
+	}
 	recordHeaderLen := tlsRecordHeaderLen
 	b := c.out.newBlock()
 	first := true
