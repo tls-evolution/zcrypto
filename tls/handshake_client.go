@@ -880,7 +880,7 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13, session *ClientS
 	// TODO TLS 1.3 handshake not supported yet, aborting here
 	return tls13notImplementedAbortError()
 
-	hs.finishedHash.Write(helloBytes)
+	hs.finishedHash.Write(hello.marshal())
 	hs.finishedHash.Write(hs.serverHello.marshal())
 
 	isResume, err := hs.processServerHello()

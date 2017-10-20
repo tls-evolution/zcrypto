@@ -69,7 +69,7 @@ const (
 	typeClientKeyExchange   uint8 = 16
 	typeFinished            uint8 = 20
 	typeCertificateStatus   uint8 = 22
-	typeNextProtocol        uint8 = 67  // Not IANA assigned
+	typeNextProtocol        uint8 = 67 // Not IANA assigned
 	// typeEncryptedExtensions uint8 = 203 // Not IANA assigned
 )
 
@@ -165,7 +165,7 @@ type keyShare struct {
 type PSKMode uint8
 
 const (
-	PSKKE PSKMode = 0
+	PSKKE  PSKMode = 0
 	PSKDHE PSKMode = 1
 )
 
@@ -933,8 +933,8 @@ func defaultConfig() *Config {
 }
 
 var (
-	once                   sync.Once
-	varDefaultCipherSuites []uint16
+	once                        sync.Once
+	varDefaultCipherSuites      []uint16
 	varDefaultTLS13CipherSuites []uint16
 )
 
@@ -1354,7 +1354,7 @@ func (config *Config) MarshalJSON() ([]byte, error) {
 	aux.ClientCAs = config.ClientCAs
 	aux.InsecureSkipVerify = config.InsecureSkipVerify
 
-	ciphers := config.cipherSuites()
+	ciphers := config.cipherSuites(VersionTLS12)
 	aux.CipherSuites = make([]CipherSuite, len(ciphers))
 	for i, aCipher := range ciphers {
 		aux.CipherSuites[i] = CipherSuite(aCipher)
