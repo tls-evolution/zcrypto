@@ -339,7 +339,7 @@ func (m *clientHelloMsg) marshal() []byte {
 	}
 	if m.extendedRandomEnabled {
 		z[0] = byte(extensionExtendedRandom >> 8)
-		z[1] = byte(extensionExtendedRandom)
+		z[1] = byte(extensionExtendedRandom & 0xff)
 		exLen := len(m.extendedRandom)
 		length := 2 + exLen
 		z[2] = byte(length >> 8)
@@ -1104,7 +1104,7 @@ func (m *serverHelloMsg) marshal() []byte {
 	}
 	if m.extendedRandomEnabled {
 		z[0] = byte(extensionExtendedRandom >> 8)
-		z[1] = byte(extensionExtendedRandom)
+		z[1] = byte(extensionExtendedRandom & 0xff)
 		exLen := len(m.extendedRandom)
 		fullLength := 2 + exLen
 		z[2] = byte(fullLength << 8)
