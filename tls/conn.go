@@ -648,7 +648,8 @@ Again:
 
 	vers := uint16(b.data[1])<<8 | uint16(b.data[2])
 	n := int(b.data[3])<<8 | int(b.data[4])
-	if n > maxCiphertext {
+	if (c.vers >= VersionTLS13 && n > maxCiphertextTLS13) ||
+		(c.vers < VersionTLS13 && n > maxCiphertext) {
 		c.sendAlert(alertRecordOverflow)
 		return c.in.setErrorLocked(fmt.Errorf("tls: oversized record received with length %d", n))
 	}
@@ -684,13 +685,9 @@ Again:
 	}
 	b.off = off
 	data := b.data[b.off:]
-	if len(data) > maxPlaintext {
-		c.in.freeBlock(b)
-		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
-	}
 
-	// After checking the plaintext length, remove 1.3 padding and
-	// extract the real content type.
+	// At this point data contains an TLSInnerPlaintext
+	// Remove 1.3 padding and extract the real content type.
 	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.4.
 	if c.vers >= VersionTLS13 {
 		i := len(data) - 1
@@ -707,6 +704,12 @@ Again:
 		typ = recordType(data[i])
 		data = data[:i]
 		b.resize(b.off + i) // shrinks, guaranteed not to reallocate
+	}
+
+	// Now validate the plaintext length, which may not exceed 2**14 bytes
+	if len(data) > maxPlaintext {
+		c.in.freeBlock(b)
+		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
 	}
 
 	switch typ {

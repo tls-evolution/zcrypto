@@ -35,6 +35,7 @@ const (
 const (
 	maxPlaintext        = 16384        // maximum plaintext payload length
 	maxCiphertext       = 16384 + 2048 // maximum ciphertext payload length
+	maxCiphertextTLS13  = 16384 + 256  // maximum ciphertext payload for TLS 1.3
 	tlsRecordHeaderLen  = 5            // record header length
 	dtlsRecordHeaderLen = 13
 	maxHandshake        = 65536 // maximum handshake we support (protocol max is 16 MB)
