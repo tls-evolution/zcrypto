@@ -704,6 +704,7 @@ Again:
 		}
 		typ = recordType(data[i])
 		data = data[:i]
+		b.data[0] = uint8(typ)
 		b.resize(b.off + i) // shrinks, guaranteed not to reallocate
 	}
 
