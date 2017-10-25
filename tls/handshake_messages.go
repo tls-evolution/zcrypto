@@ -187,8 +187,14 @@ func (m *clientHelloMsg) marshal() []byte {
 	x[1] = uint8(length >> 16)
 	x[2] = uint8(length >> 8)
 	x[3] = uint8(length)
-	x[4] = uint8(m.vers >> 8)
-	x[5] = uint8(m.vers)
+	if m.vers >= VersionTLS13 {
+		// legacy_version see: https://tools.ietf.org/html/draft-ietf-tls-tls13-21#section-4.1.2
+		x[4] = uint8(VersionTLS12 >> 8)
+		x[5] = uint8(VersionTLS12 & 0xFF)
+	} else {
+		x[4] = uint8(m.vers >> 8)
+		x[5] = uint8(m.vers)
+	}
 	copy(x[6:38], m.random)
 	x[38] = uint8(len(m.sessionId))
 	copy(x[39:39+len(m.sessionId)], m.sessionId)

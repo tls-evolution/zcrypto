@@ -460,7 +460,6 @@ func (c *Conn) clientHandshake() error {
 		// TODO not part of cloudflares implementation
 		privKeys := make(map[CurveID][]byte)
 		if hello.vers >= VersionTLS13 {
-			hello.vers = VersionTLS12
 			hello.supportedVersions = append(hello.supportedVersions, VersionTLS13)
 			hello.supportedVersions = append(hello.supportedVersions, 0x7f00|0x10) // draft 16
 			hello.supportedVersions = append(hello.supportedVersions, 0x7f00|0x11) // draft 17
@@ -505,7 +504,7 @@ func (c *Conn) clientHandshake() error {
 			// calculated and set by hello.marshal()
 
 			// 0x03, 0x03, // version (TLS 1.2)
-			hello.vers = VersionTLS12
+			//hello.vers = VersionTLS13 -> sent as 1.2 by hello.marshal()
 
 			// 0xc4, 0x1b, 0x10, 0x1f, 0x79, 0xe3, 0xd3, 0xd3, 0x2c, 0x90, 0x60, 0x83, 0x92, 0xde, 0x7e, 0x6b,
 			// 0xbb, 0x70, 0xcd, 0x44, 0x5b, 0x88, 0xb8, 0x52, 0x5a, 0x8e, 0x35, 0x06, 0xd0, 0x1b, 0xd4, 0x20, // random (32 byte)
