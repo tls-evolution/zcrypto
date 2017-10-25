@@ -311,6 +311,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			nonce := seq
 			if c.explicitNonce {
 				//fmt.Println("explicitNonce")
+				explicitIVLen = 8
 				if len(payload) < explicitIVLen {
 					return false, 0, alertBadRecordMAC
 				}
