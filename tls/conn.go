@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"encoding/hex"
+	//	"encoding/hex"
+	//	"runtime/debug"
 	"github.com/zmap/zcrypto/x509"
-	"runtime/debug"
 )
 
 // A Conn represents a secured connection.
@@ -304,13 +304,13 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 	if hc.cipher != nil {
 		switch c := hc.cipher.(type) {
 		case cipher.Stream:
-			fmt.Println("Stream")
+			//fmt.Println("Stream")
 			c.XORKeyStream(payload, payload)
 		case *tlsAead:
-			fmt.Println("AEAD")
+			//fmt.Println("AEAD")
 			nonce := seq
 			if c.explicitNonce {
-				fmt.Println("explicitNonce")
+				//fmt.Println("explicitNonce")
 				if len(payload) < explicitIVLen {
 					return false, 0, alertBadRecordMAC
 				}
@@ -328,17 +328,17 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 				additionalData[12] = byte(n)
 			}
 			var err error
-			fmt.Printf("tlsAead:payload:encrypted:\n%s", hex.Dump(payload))
-			fmt.Printf("nonce:\n%sadditionalData:\n%s", hex.Dump(nonce), hex.Dump(additionalData))
+			//fmt.Printf("tlsAead:payload:encrypted:\n%s", hex.Dump(payload))
+			//fmt.Printf("nonce:\n%sadditionalData:\n%s", hex.Dump(nonce), hex.Dump(additionalData))
 			payload, err = c.Open(payload[:0], nonce, payload, additionalData)
-			fmt.Printf("tlsAead:payload:\n%s", hex.Dump(payload))
+			//fmt.Printf("tlsAead:payload:\n%s", hex.Dump(payload))
 			if err != nil {
-				fmt.Println("error")
+				//fmt.Println("error")
 				return false, 0, alertBadRecordMAC
 			}
 			b.resize(recordHeaderLen + explicitIVLen + len(payload))
 		case cbcMode:
-			fmt.Println("cbcMode")
+			//fmt.Println("cbcMode")
 			blockSize := c.BlockSize()
 			if hc.version >= VersionTLS11 {
 				explicitIVLen = blockSize
@@ -371,7 +371,7 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 			// However, our behavior matches OpenSSL, so we leak
 			// only as much as they do.
 		default:
-			fmt.Println("unknown cipher type")
+			//fmt.Println("unknown cipher type")
 			panic("unknown cipher type")
 		}
 	}
@@ -759,8 +759,8 @@ Again:
 		if c.handshakeComplete && want == recordTypeApplicationData {
 			//TODO Post-handshake messages
 		} else if typ != want {
-			fmt.Println("conn.go:readRecord:757:")
-			fmt.Printf("%s\n", hex.Dump(data))
+			//fmt.Println("conn.go:readRecord:757:")
+			//fmt.Printf("%s\n", hex.Dump(data))
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
 		}
 		c.hand.Write(data)
@@ -811,8 +811,8 @@ func (c *Conn) sendAlert(err alert) error {
 func (c *Conn) writeRecord(typ recordType, data []byte) (n int, err error) {
 
 	if typ == recordTypeApplicationData {
-		fmt.Printf("Client Send:\n%s\n", hex.Dump(data))
-		debug.PrintStack()
+		//fmt.Printf("Client Send:\n%s\n", hex.Dump(data))
+		//debug.PrintStack()
 	}
 	recordHeaderLen := tlsRecordHeaderLen
 	b := c.out.newBlock()
@@ -848,9 +848,9 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (n int, err error) {
 		}
 		b.resize(recordHeaderLen + explicitIVLen + m)
 		b.data[0] = byte(typ)
-		fmt.Printf("conn.go:writeRecord:839:type:%d\n", typ)
+		//fmt.Printf("conn.go:writeRecord:839:type:%d\n", typ)
 		if typ == recordTypeAlert {
-			debug.PrintStack()
+			//debug.PrintStack()
 		}
 		vers := c.vers
 		if vers == 0 {
@@ -920,8 +920,8 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	}
 
 	data := c.hand.Bytes()
-	fmt.Println("conn.go:readHandShake:data:")
-	fmt.Println(data)
+	//fmt.Println("conn.go:readHandShake:data:")
+	//fmt.Println(data)
 	//fmt.Println("2")
 	n := int(data[1])<<16 | int(data[2])<<8 | int(data[3])
 
@@ -954,7 +954,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		}
 	case typeEncryptedExtensions:
 		m = new(encryptedExtensionsMsg)
-		fmt.Println("encryptedExtensionsMsg")
+		//fmt.Println("encryptedExtensionsMsg")
 	case typeNewSessionTicket:
 		m = new(newSessionTicketMsg)
 	case typeCertificate:

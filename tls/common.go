@@ -740,7 +740,7 @@ func (c *Config) mutualVersion(vers uint16) (uint16, bool) {
 	minVersion := c.minVersion()
 	maxVersion := c.maxVersion()
 
-	fmt.Printf("server vers:%x\tminVersion:%x\tmaxVersion%x\n", vers, minVersion, maxVersion)
+	//fmt.Printf("server vers:%x\tminVersion:%x\tmaxVersion%x\n", vers, minVersion, maxVersion)
 
 	if vers < minVersion {
 		return 0, false

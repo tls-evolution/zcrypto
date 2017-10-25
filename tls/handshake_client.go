@@ -15,7 +15,7 @@ import (
 	"crypto/subtle"
 	"encoding/asn1"
 	"encoding/binary"
-	"encoding/hex"
+	// "encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -578,7 +578,7 @@ func (c *Conn) clientHandshake() error {
 			// 		0x68, 0x32, // next protocol (h2)
 			// 		0x08, //alpn string len
 			// 		0x68, 0x74, 0x74, 0x70, 0x2f, 0x31, 0x2e, 0x31, // http/1.1
-			hello.alpnProtocols = []string{"h2", "http/1.1"}
+			hello.alpnProtocols = []string{ /*"h2",*/ "http/1.1"}
 
 			// 0x00, 0x05, // status request
 			// 	0x00, 0x05, // len
@@ -726,7 +726,7 @@ func (c *Conn) clientHandshake() error {
 	if ok {
 		c.handshakeLog.ServerHello = serverHello13.MakeLog()
 		err := c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
-		fmt.Println("handshake13 finished")
+		//fmt.Println("handshake13 finished")
 		return err
 	}
 
@@ -866,6 +866,7 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 		} else if !cipherImplemented {
 			c.cipherError = ErrUnimplementedCipher
 		}
+		return c.cipherError
 	}
 
 	hs := &clientHandshakeState{
@@ -882,7 +883,7 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 	}
 
 	// stop here, send alert to peer letting him know that abort is not his fault
-	fmt.Printf("CH/SH done, version %x suite %x\n", vers, suite)
+	//fmt.Printf("CH/SH done, version %x suite %x\n", vers, suite)
 	//c.sendAlert(alertInternalError)
 	// TODO TLS 1.3 handshake not supported yet, aborting here
 	//return tls13notImplementedAbortError()
@@ -1042,7 +1043,7 @@ func (hs *clientHandshakeState) hkdfExpandLabelDraft18(secret []byte, label stri
 	z[0] = byte(len(hashValue))
 	copy(z[1:], hashValue)
 
-	fmt.Printf("hkdfExpandLabelDraft18:\n%s\n", hex.Dump(hkdfLabel))
+	//fmt.Printf("hkdfExpandLabelDraft18:\n%s\n", hex.Dump(hkdfLabel))
 
 	return hkdfExpand(hs.hash, secret, hkdfLabel, length)
 }
@@ -1109,10 +1110,10 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	chsIV := hs.hkdfExpandLabelDraft18(chsSecret, "iv", nil, 12)
 	shsKey := hs.hkdfExpandLabelDraft18(shsSecret, "key", nil, hs.suite.keyLen)
 	shsIV := hs.hkdfExpandLabelDraft18(shsSecret, "iv", nil, 12)
-	fmt.Println(chsKey, len(chsKey))
-	fmt.Println(shsKey, len(shsKey))
-	fmt.Println(chsIV, len(chsIV))
-	fmt.Println(shsIV, len(shsIV))
+	//fmt.Println(chsKey, len(chsKey))
+	//fmt.Println(shsKey, len(shsKey))
+	//fmt.Println(chsIV, len(chsIV))
+	//fmt.Println(shsIV, len(shsIV))
 	var clientCipher, serverCipher interface{}
 	//var /*clientHash*/ /*, serverHash*/ macFunction
 	if hs.suite.cipher != nil {
@@ -1135,7 +1136,7 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	msg, err := hs.c.readHandshake()
 	//fmt.Printf("%v\n", hs.privKey)
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
 	}
 
 	encryptedExtensions, ok := msg.(*encryptedExtensionsMsg)
@@ -1148,9 +1149,8 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	//certificate
 	msg, err = hs.c.readHandshake()
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
 	}
-
 	certificate, ok := msg.(*certificateMsg13)
 	var cert *x509.Certificate
 	if ok {
@@ -1159,17 +1159,21 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 		}
 	}
 
+	if certificate == nil {
+		panic(fmt.Errorf("CERT IS NIL: %v\nMsg was: %v\nErr was: %v", hs.c.config.ServerName, msg, err))
+	}
+
 	contex = append(contex, certificate.marshal())
 
 	msg, err = hs.c.readHandshake()
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
 	}
 
 	certificateVerify, ok := msg.(*certificateVerifyMsg)
 	if ok {
 		sigScheme := sigAndHashToSigScheme(certificateVerify.signatureAndHash)
-		fmt.Printf("sigScheme: %x\n", sigScheme)
+		//fmt.Printf("sigScheme: %x\n", sigScheme)
 		sigHash := hashForSignatureScheme(sigScheme)
 		transHash := hs.hash.New()
 		for i := 0; i < len(contex); i++ {
@@ -1218,7 +1222,7 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 
 	msg, err = hs.c.readHandshake()
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
 	}
 
 	serverFinished, ok := msg.(*finishedMsg)
@@ -1233,10 +1237,10 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	if len(expectedVerifyData) != len(serverFinished.verifyData) ||
 		subtle.ConstantTimeCompare(expectedVerifyData, serverFinished.verifyData) != 1 {
 		hs.c.sendAlert(alertDecryptError)
-		fmt.Println("expectedVerifyData")
-		fmt.Println(expectedVerifyData)
-		fmt.Println("serverFinished.expectedVerifyData")
-		fmt.Println(serverFinished.verifyData)
+		//fmt.Println("expectedVerifyData")
+		//fmt.Println(expectedVerifyData)
+		//fmt.Println("serverFinished.expectedVerifyData")
+		//fmt.Println(serverFinished.verifyData)
 		return errors.New("tls: client's Finished message is incorrect")
 	}
 
@@ -1266,9 +1270,9 @@ func (hs *clientHandshakeState) doFullHandshake13() error {
 	client_finished_key := hs.hkdfExpandLabelDraft18(chsSecret, "finished", nil, hs.hash.Size())
 	clientFinishedVerifyData := hmacOfFinishedMsg(hs.hash, client_finished_key, contex)
 	clientFinished := &finishedMsg{verifyData: clientFinishedVerifyData}
-	fmt.Printf("%s\n", hex.Dump(clientFinished.marshal()))
+	//fmt.Printf("%s\n", hex.Dump(clientFinished.marshal()))
 	//hs.c.out.changeCipherSpec()
-	fmt.Println("here")
+	//fmt.Println("here")
 	if _, err := hs.c.writeRecord(recordTypeHandshake, clientFinished.marshal()); err != nil {
 		return err
 	}
