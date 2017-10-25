@@ -869,7 +869,6 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (n int, err error) {
 			b.data[1] = byte(vers >> 8)
 			b.data[2] = byte(vers)
 		}
-		b.data[2] = 1
 		b.data[3] = byte(m >> 8)
 		b.data[4] = byte(m)
 		if explicitIVLen > 0 {
