@@ -21,6 +21,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -747,6 +748,17 @@ func (c *Conn) clientHandshake() error {
 		c.sendAlert(alertProtocolVersion)
 		return fmt.Errorf("tls: server selected unsupported protocol version %x", serverHello.vers)
 	}
+
+	if c.vers >= VersionTLS13 {
+		rnd8 := serverHello.random[len(serverHello.random)-8:]
+		if (rnd8[7] <= 1) && !reflect.DeepEqual(rnd8[:7], []uint8{0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44}) {
+			// Man in the middle downgrade protection
+			// see: https://tools.ietf.org/html/draft-ietf-tls-tls13-21#section-4.1.3
+			c.sendAlert(alertIllegalParameter)
+			return fmt.Errorf("tls: TLS1.3 downgrade protection")
+		}
+	}
+
 	c.vers = vers
 	c.haveVers = true
 
