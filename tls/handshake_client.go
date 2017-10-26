@@ -238,6 +238,7 @@ func (c *Conn) clientHandshake() error {
 	var session *ClientSessionState
 	var sessionCache ClientSessionCache
 	var cacheKey string
+	var privKeys map[CurveID][]byte
 
 	// first, let's check if a ClientFingerprintConfiguration template was provided by the config
 	if c.config.ClientFingerprintConfiguration != nil {
@@ -457,7 +458,7 @@ func (c *Conn) clientHandshake() error {
 		}
 
 		// TODO not part of cloudflares implementation
-		privKeys := make(map[CurveID][]byte)
+		privKeys = make(map[CurveID][]byte)
 		if hello.vers >= VersionTLS13 {
 			hello.vers = VersionTLS12
 			hello.supportedVersions = append(hello.supportedVersions, VersionTLS13)
