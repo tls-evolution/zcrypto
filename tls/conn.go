@@ -953,6 +953,8 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		} else {
 			m = new(serverHelloMsg)
 		}
+	case typeHelloRetryRequest:
+		m = new(helloRetryRequestMsg)
 	case typeEncryptedExtensions:
 		m = new(encryptedExtensionsMsg)
 		//fmt.Println("encryptedExtensionsMsg")

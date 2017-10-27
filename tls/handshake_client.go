@@ -712,6 +712,8 @@ func (c *Conn) clientHandshake() error {
 
 	c.handshakeLog = new(ServerHandshake)
 	c.heartbleedLog = new(Heartbleed)
+	var helloRetryRequest *helloRetryRequestMsg = nil
+retry:
 	c.writeRecord(recordTypeHandshake, helloBytes)
 	c.handshakeLog.ClientHello = hello.MakeLog()
 
@@ -725,10 +727,30 @@ func (c *Conn) clientHandshake() error {
 	// is mainly a code duplication of the rest of this functions code
 	serverHello13, ok := msg.(*serverHelloMsg13)
 	if ok {
-		c.handshakeLog.ServerHello = serverHello13.MakeLog()
-		err := c.clientHandshake13(serverHello13, session, hello, cacheKey, privKeys)
-		//fmt.Println("handshake13 finished")
-		return err
+		c.handshakeLog.ServerHello = serverHello13.MakeLog(helloRetryRequest)
+		return c.clientHandshake13(serverHello13, helloRetryRequest, session, hello, cacheKey, privKeys)
+	}
+	helloRetryRequest, ok = msg.(*helloRetryRequestMsg)
+	if ok {
+		if helloRetryRequest.cookie != nil {
+			copy(hello.cookie, helloRetryRequest.cookie)
+		}
+
+		curve, ok := curveForCurveID(helloRetryRequest.keyShare.group)
+		if !ok {
+			return tls13notImplementedAbortError() // TLS1.3 with unsupported curve
+		}
+
+		_, x, y, err := elliptic.GenerateKey(curve, c.config.rand())
+		if err != nil {
+			return err
+		}
+
+		ecdhePublic := elliptic.Marshal(curve, x, y)
+		hello.keyShares = []keyShare{keyShare{helloRetryRequest.keyShare.group, ecdhePublic}}
+		hello.raw = nil // prevent using outdated, cached copy
+		helloBytes = hello.marshal()
+		goto retry
 	}
 
 	serverHello, ok := msg.(*serverHelloMsg)
@@ -846,6 +868,7 @@ func (c *Conn) clientHandshake() error {
 }
 
 func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
+	retryRequest *helloRetryRequestMsg,
 	session *ClientSessionState,
 	hello *clientHelloMsg,
 	cacheKey string,
@@ -853,7 +876,7 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 
 	//sessionCache := c.config.ClientSessionCache
 
-	//c.handshakeLog.ServerHello = serverHello.MakeLog()
+	//c.handshakeLog.ServerHello = serverHello.MakeLog(retryRequest)
 
 	// if serverHello.heartbeatEnabled {
 	// 	c.heartbeat = true
@@ -902,6 +925,7 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 
 	hs.finishedHash.Write(hs.hello.marshal())
 	hs.finishedHash.Write(hs.serverHello13.marshal())
+
 
 	hs.doFullHandshake13()
 	//c.sendAlert(alertInternalError)
