@@ -738,7 +738,7 @@ retry:
 
 		curve, ok := curveForCurveID(helloRetryRequest.keyShare.group)
 		if !ok {
-			return tls13notImplementedAbortError() // TLS1.3 with unsupported curve
+			return tls13notImplementedAbortError(fmt.Errorf("TLS1.3 with unsupported curve"))
 		}
 
 		_, x, y, err := elliptic.GenerateKey(curve, c.config.rand())
@@ -925,7 +925,6 @@ func (c *Conn) clientHandshake13(serverHello *serverHelloMsg13,
 
 	hs.finishedHash.Write(hs.hello.marshal())
 	hs.finishedHash.Write(hs.serverHello13.marshal())
-
 
 	hs.doFullHandshake13()
 	//c.sendAlert(alertInternalError)
