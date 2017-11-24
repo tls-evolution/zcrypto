@@ -8,6 +8,7 @@ import (
 	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/subtle"
+	"encoding/asn1"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -731,7 +732,6 @@ func (hs *serverHandshakeState) traceErr(err error) {
 	}
 }
 
-/*
 func (hs *clientHandshakeState) processCertsFromServer13(certMsg *certificateMsg13) error {
 	certs := make([][]byte, len(certMsg.certificates))
 	for i, cert := range certMsg.certificates {
@@ -911,4 +911,3 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	c.in.setCipher(c.vers, serverCipher)
 	return nil
 }
-*/
