@@ -842,17 +842,13 @@ Again:
 
 	case recordTypeHandshake:
 		// TODO(rsc): Should at least pick off connection close.
+		// If early data was being read, a Finished message is expected
+		// instead of (early) application data.
 		if typ != want && !(c.isClient && c.config.Renegotiation != RenegotiateNever) &&
-			c.phase != waitingClientFinished {
+			!(want == recordTypeApplicationData && c.phase == waitingClientFinished) {
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
 		}
 		c.hand.Write(data)
-		if typ != want && c.phase == waitingClientFinished {
-			if err := c.hs.readClientFinished13(); err != nil {
-				c.in.setErrorLocked(err)
-				break
-			}
-		}
 	}
 
 	if b != nil {
@@ -1136,7 +1132,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	case typeClientHello:
 		m = new(clientHelloMsg)
 	case typeServerHello:
-		if c.vers >= VersionTLS13 {
+		if isTLS13ServerHello(data) {
 			m = new(serverHelloMsg13)
 		} else {
 			m = new(serverHelloMsg)
@@ -1310,6 +1306,10 @@ func (c *Conn) handleRenegotiation() error {
 // client sent valid 0-RTT data. In any other case it's equivalent to
 // calling Handshake.
 func (c *Conn) ConfirmHandshake() error {
+	if c.isClient {
+		panic("ConfirmHandshake should only be called for servers")
+	}
+
 	if err := c.Handshake(); err != nil {
 		return err
 	}
@@ -1336,6 +1336,9 @@ func (c *Conn) ConfirmHandshake() error {
 	defer c.in.Unlock()
 
 	var input *block
+	// Try to read all data (if phase==readingEarlyData) or extract the
+	// remaining data from the previous read that could not fit in the read
+	// buffer (if c.input != nil).
 	if c.phase == readingEarlyData || c.input != nil {
 		buf := &bytes.Buffer{}
 		if _, err := buf.ReadFrom(earlyDataReader{c}); err != nil {
@@ -1345,8 +1348,11 @@ func (c *Conn) ConfirmHandshake() error {
 		input = &block{data: buf.Bytes()}
 	}
 
-	for c.phase != handshakeConfirmed {
-		if err := c.readRecord(recordTypeApplicationData); err != nil {
+	// At this point, earlyDataReader has read all early data and received
+	// the end_of_early_data signal. Expect a Finished message.
+	// Locks held so far: c.confirmMutex, c.in
+	for c.phase != handshakeConfirmed { // c.phase == discardingEarlyData || c.phase == waitingClientFinished
+		if err := c.hs.readClientFinished13(false); err != nil {
 			c.in.setErrorLocked(err)
 			return err
 		}
@@ -1397,6 +1403,7 @@ func (r earlyDataReader) Read(b []byte) (n int, err error) {
 		}
 	}
 
+	// Following early application data, an end_of_early_data is expected.
 	if err == nil && c.phase != readingEarlyData && c.input == nil {
 		err = io.EOF
 	}
@@ -1440,7 +1447,14 @@ func (c *Conn) Read(b []byte) (n int, err error) {
 				// Soft error, like EAGAIN
 				return 0, err
 			}
-			if c.hand.Len() > 0 {
+			if c.hand.Len() > 0 && c.phase == waitingClientFinished {
+				// Server has received all early data, confirm
+				// by reading the Client Finished message.
+				if err := c.hs.readClientFinished13(false); err != nil {
+					c.in.setErrorLocked(err)
+					return 0, err
+				}
+			} else if c.hand.Len() > 0 {
 				// We received handshake bytes, indicating the
 				// start of a renegotiation.
 				if err := c.handleRenegotiation(); err != nil {
