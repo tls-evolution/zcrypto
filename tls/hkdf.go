@@ -56,21 +56,3 @@ func hkdfExtract(hash crypto.Hash, secret, salt []byte) []byte {
 	extractor.Write(secret)
 	return extractor.Sum(nil)
 }
-
-func hkdfExpandLabel(hash crypto.Hash, secret []byte, label string, hashValue []byte, L int) []byte {
-	hkdfLable := make([]byte, 4+len("tls13")+len(label)+len(hashValue))
-	hkdfLable[0] = byte(L >> 8)
-	hkdfLable[1] = byte(L)
-	hkdfLable[2] = byte(len("tls13") + len(label))
-	copy(hkdfLable[3:], "tls13")
-	z := hkdfLable[3+len("tls13"):]
-	copy(z, label)
-	z = z[len(label):]
-	//z[0] = byte(len(hashValue))
-	copy(z, hashValue)
-	return hkdfExpand(hash, secret, hkdfLable, L)
-}
-
-func deriveSecrete(hash crypto.Hash, secret []byte, label string, hashValue []byte) []byte {
-	return hkdfExpandLabel(hash, secret, label, hashValue, hash.Size())
-}

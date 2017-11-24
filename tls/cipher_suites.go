@@ -80,6 +80,10 @@ const (
 	// suiteDSS indicates the cipher suite uses DSS signatures and requires a
 	// DSA server key
 	suiteDSS
+
+	// suiteDefaultOff indicates that this cipher suite is not included by
+	// default.
+	suiteDefaultOff
 )
 
 // A cipherSuite is a specific combination of key agreement, cipher and MAC
@@ -172,6 +176,8 @@ var implementedCipherSuites = []*cipherSuite{
 	{TLS_DHE_DSS_WITH_AES_128_GCM_SHA256, 16, 0, 4, 16, dheDSSKA, suiteDSS | suiteTLS12, nil, nil, aeadAESGCM12},
 	{TLS_DHE_DSS_WITH_AES_256_GCM_SHA384, 32, 0, 4, 32, dheDSSKA, suiteDSS | suiteTLS12 | suiteSHA384, nil, nil, aeadAESGCM12},
 }
+
+var cipherSuites = implementedCipherSuites
 
 var stdlibCipherSuites = []*cipherSuite{
 	// Ciphersuite order is chosen so that ECDHE comes before plain RSA
@@ -519,7 +525,7 @@ func dhAnonKA(version uint16) keyAgreement {
 func mutualCipherSuite(have []uint16, want uint16) *cipherSuite {
 	for _, id := range have {
 		if id == want {
-			for _, suite := range implementedCipherSuites {
+			for _, suite := range cipherSuites {
 				if suite.id == want {
 					return suite
 				}

@@ -15,7 +15,7 @@ import (
 
 // SignatureAndHash is a signatureAndHash that implements json.Marshaler and
 // json.Unmarshaler
-type SignatureAndHash signatureAndHash
+type SignatureAndHash SignatureScheme
 
 type auxSignatureAndHash struct {
 	SignatureAlgorithm string `json:"signature_algorithm"`
@@ -25,8 +25,8 @@ type auxSignatureAndHash struct {
 // MarshalJSON implements the json.Marshaler interface
 func (sh *SignatureAndHash) MarshalJSON() ([]byte, error) {
 	aux := auxSignatureAndHash{
-		SignatureAlgorithm: nameForSignature(sh.signature),
-		HashAlgorithm:      nameForHash(sh.hash),
+		SignatureAlgorithm: nameForSignature(byte(*sh)),
+		HashAlgorithm:      nameForHash(byte(*sh >> 8)),
 	}
 	return json.Marshal(&aux)
 }

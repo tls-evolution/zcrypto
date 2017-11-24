@@ -34,7 +34,6 @@ type ClientHello struct {
 	TicketSupported      bool                `json:"ticket"`
 	SecureRenegotiation  bool                `json:"secure_renegotiation"`
 	HeartbeatSupported   bool                `json:"heartbeat"`
-	ExtendedRandom       []byte              `json:"extended_random,omitempty"`
 	ExtendedMasterSecret bool                `json:"extended_master_secret"`
 	NextProtoNeg         bool                `json:"next_protocol_negotiation"`
 	ServerName           string              `json:"server_name,omitempty"`
@@ -42,7 +41,7 @@ type ClientHello struct {
 	SupportedCurves      []CurveID           `json:"supported_curves,omitempty"`
 	SupportedPoints      []PointFormat       `json:"supported_point_formats,omitempty"`
 	SessionTicket        *SessionTicket      `json:"session_ticket,omitempty"`
-	SignatureAndHashes   []SignatureAndHash  `json:"signature_and_hashes,omitempty"`
+	SignatureAndHashes   []SignatureScheme   `json:"signature_and_hashes,omitempty"`
 	SctEnabled           bool                `json:"sct_enabled"`
 	AlpnProtocols        []string            `json:"alpn_protocols,omitempty"`
 	UnknownExtensions    [][]byte            `json:"unknown_extensions,omitempty"`
@@ -65,21 +64,20 @@ type HelloRetryRequest struct {
 }
 
 type ServerHello struct {
-	Version                     TLSVersion         `json:"version"`
-	Random                      []byte             `json:"random"`
-	SessionID                   []byte             `json:"session_id"`
-	CipherSuite                 CipherSuite        `json:"cipher_suite"`
-	CompressionMethod           uint8              `json:"compression_method"`
-	OcspStapling                bool               `json:"ocsp_stapling"`
-	TicketSupported             bool               `json:"ticket"`
-	SecureRenegotiation         bool               `json:"secure_renegotiation"`
-	HeartbeatSupported          bool               `json:"heartbeat"`
-	ExtendedRandom              []byte             `json:"extended_random,omitempty"`
-	ExtendedMasterSecret        bool               `json:"extended_master_secret"`
-	SignedCertificateTimestamps []ParsedAndRawSCT  `json:"scts,omitempty"`
-	Raw                         []byte             `json:"raw,omitempty"`
-	RetryRequest                *HelloRetryRequest `json:"retry_request,omitempty"`
-	KeyShare                    KeyShareT          `json:"keyshare"`
+	Version                     TLSVersion        `json:"version"`
+	Random                      []byte            `json:"random"`
+	SessionID                   []byte            `json:"session_id"`
+	CipherSuite                 CipherSuite       `json:"cipher_suite"`
+	CompressionMethod           uint8             `json:"compression_method"`
+	OcspStapling                bool              `json:"ocsp_stapling"`
+	TicketSupported             bool              `json:"ticket"`
+	SecureRenegotiation         bool              `json:"secure_renegotiation"`
+	HeartbeatSupported          bool              `json:"heartbeat"`
+	ExtendedMasterSecret        bool              `json:"extended_master_secret"`
+	SignedCertificateTimestamps []ParsedAndRawSCT `json:"scts,omitempty"`
+	Raw                         []byte            `json:"raw,omitempty"`
+	//RetryRequest                *HelloRetryRequest `json:"retry_request,omitempty"`
+	KeyShare KeyShareT `json:"keyshare"`
 }
 
 // SimpleCertificate holds a *x509.Certificate and a []byte for the certificate
@@ -299,13 +297,8 @@ func (m *clientHelloMsg) MakeLog() *ClientHello {
 
 	ch.OcspStapling = m.ocspStapling
 	ch.TicketSupported = m.ticketSupported
-	ch.SecureRenegotiation = m.secureRenegotiation
+	ch.SecureRenegotiation = m.secureRenegotiationSupported
 	ch.HeartbeatSupported = m.heartbeatEnabled
-
-	if len(m.extendedRandom) > 0 {
-		ch.ExtendedRandom = make([]byte, len(m.extendedRandom))
-		copy(ch.ExtendedRandom, m.extendedRandom)
-	}
 
 	ch.NextProtoNeg = m.nextProtoNeg
 	ch.ServerName = m.serverName
@@ -326,12 +319,12 @@ func (m *clientHelloMsg) MakeLog() *ClientHello {
 		ch.SessionTicket.LifetimeHint = 0 // Clients don't send
 	}
 
-	ch.SignatureAndHashes = make([]SignatureAndHash, len(m.signatureAndHashes))
-	for i, aGroup := range m.signatureAndHashes {
-		ch.SignatureAndHashes[i] = SignatureAndHash(aGroup)
+	ch.SignatureAndHashes = make([]SignatureScheme, len(m.supportedSignatureAlgorithms))
+	for i, aGroup := range m.supportedSignatureAlgorithms {
+		ch.SignatureAndHashes[i] = aGroup
 	}
 
-	ch.SctEnabled = m.sctEnabled
+	ch.SctEnabled = m.scts
 
 	ch.AlpnProtocols = make([]string, len(m.alpnProtocols))
 	copy(ch.AlpnProtocols, m.alpnProtocols)
@@ -356,12 +349,8 @@ func (m *serverHelloMsg) MakeLog() *ServerHello {
 	sh.CompressionMethod = m.compressionMethod
 	sh.OcspStapling = m.ocspStapling
 	sh.TicketSupported = m.ticketSupported
-	sh.SecureRenegotiation = m.secureRenegotiation
+	sh.SecureRenegotiation = m.secureRenegotiationSupported
 	sh.HeartbeatSupported = m.heartbeatEnabled
-	if len(m.extendedRandom) > 0 {
-		sh.ExtendedRandom = make([]byte, len(m.extendedRandom))
-		copy(sh.ExtendedRandom, m.extendedRandom)
-	}
 	if len(m.scts) > 0 {
 		for _, rawSCT := range m.scts {
 			var out ParsedAndRawSCT
@@ -379,22 +368,24 @@ func (m *serverHelloMsg) MakeLog() *ServerHello {
 	return sh
 }
 
-func (m *serverHelloMsg13) MakeLog(retryRequest *helloRetryRequestMsg) *ServerHello {
+func (m *serverHelloMsg13) MakeLog( /*retryRequest *helloRetryRequestMsg*/ ) *ServerHello {
 	sh := new(ServerHello)
 	sh.Version = TLSVersion(m.vers)
 	sh.Random = make([]byte, len(m.random))
 	copy(sh.Random, m.random)
 	sh.CipherSuite = CipherSuite(m.cipherSuite)
 	sh.Raw = m.raw
-	if retryRequest != nil {
-		sh.RetryRequest = new(HelloRetryRequest)
-		sh.RetryRequest.Cookie = retryRequest.cookie
-		sh.RetryRequest.KeyShare.Group = retryRequest.keyShare.group
-		if retryRequest.hasCipherSuite {
-			sh.RetryRequest.CypherSuite = new(uint16)
-			*sh.RetryRequest.CypherSuite = retryRequest.cipherSuite
+	/*
+		if retryRequest != nil {
+			sh.RetryRequest = new(HelloRetryRequest)
+			sh.RetryRequest.Cookie = retryRequest.cookie
+			sh.RetryRequest.KeyShare.Group = retryRequest.keyShare.group
+			if retryRequest.hasCipherSuite {
+				sh.RetryRequest.CypherSuite = new(uint16)
+				*sh.RetryRequest.CypherSuite = retryRequest.cipherSuite
+			}
 		}
-	}
+	*/
 	sh.KeyShare.Group = m.keyShare.group
 	sh.KeyShare.Data = m.keyShare.data
 	return sh
@@ -404,15 +395,15 @@ func (m *certificateMsg13) MakeLog() *Certificates {
 	sc := new(Certificates)
 	if len(m.certificates) >= 1 {
 		cert := m.certificates[0]
-		sc.Certificate.Raw = make([]byte, len(cert))
-		copy(sc.Certificate.Raw, cert)
+		sc.Certificate.Raw = make([]byte, len(cert.data))
+		copy(sc.Certificate.Raw, cert.data)
 	}
 	if len(m.certificates) >= 2 {
 		chain := m.certificates[1:]
 		sc.Chain = make([]SimpleCertificate, len(chain))
 		for idx, cert := range chain {
-			sc.Chain[idx].Raw = make([]byte, len(cert))
-			copy(sc.Chain[idx].Raw, cert)
+			sc.Chain[idx].Raw = make([]byte, len(cert.data))
+			copy(sc.Chain[idx].Raw, cert.data)
 		}
 	}
 	return sc
