@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zmap/zcrypto/x509"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -75,6 +76,17 @@ func (ks *keySchedule13) setSecret(secret []byte) {
 func (ks *keySchedule13) write(data []byte) {
 	ks.handshakeCtx = nil
 	ks.transcriptHash.Write(data)
+}
+
+// write appends the data to the transcript hash using the synthetic handshake
+func (ks *keySchedule13) writeMessageHash(data []byte) {
+	ks.handshakeCtx = nil
+	hello0 := hashForSuite(ks.suite).New()
+	hello0.Write(data)
+	sz := hello0.Size()
+	block := hello0.Sum([]uint8{typeMessageHash, 0, 0, uint8(sz >> 8), uint8(sz)})
+	fmt.Printf("BLOCK: %v", block)
+	ks.transcriptHash.Write(block)
 }
 
 func (ks *keySchedule13) getLabel(secretLabel secretLabel) (label, keylogType string) {
@@ -751,6 +763,7 @@ func (hs *clientHandshakeState) processEncryptedExtensions(ee *encryptedExtensio
 
 func (hs *clientHandshakeState) verifyPeerCertificate(certVerify *certificateVerifyMsg) error {
 	if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms) {
+		return fmt.Errorf("tls: unsupported signature algorithm for server certificate: %04x", certVerify.signatureAlgorithm)
 		return errors.New("tls: unsupported signature algorithm for server certificate")
 	}
 	sigHash := hashForSignatureScheme(certVerify.signatureAlgorithm)
@@ -758,7 +771,7 @@ func (hs *clientHandshakeState) verifyPeerCertificate(certVerify *certificateVer
 	pub := hs.c.peerCertificates[0].PublicKey
 	digest := prepareDigitallySigned(sigHash, "TLS 1.3, server CertificateVerify", hs.keySchedule.transcriptHash.Sum(nil))
 	switch key := pub.(type) {
-	case *ecdsa.PublicKey:
+	case *ecdsa.PublicKey, *x509.AugmentedECDSA:
 		if sigAlg != signatureECDSA {
 			return errors.New("tls: bad signature type for server's ECDSA certificate")
 		}
@@ -769,7 +782,11 @@ func (hs *clientHandshakeState) verifyPeerCertificate(certVerify *certificateVer
 		if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
 			return errors.New("tls: ECDSA signature contained zero or negative values")
 		}
-		if !ecdsa.Verify(key, digest, ecdsaSig.R, ecdsaSig.S) {
+		pub, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			pub = key.(*x509.AugmentedECDSA).Pub
+		}
+		if !ecdsa.Verify(pub, digest, ecdsaSig.R, ecdsaSig.S) {
 			return errors.New("tls: ECDSA verification failure")
 		}
 		return nil

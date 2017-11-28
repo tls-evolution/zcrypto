@@ -80,6 +80,16 @@ func (c *Conn) serverHandshake() error {
 			return err
 		}
 		c.hs = &hs
+		// If the client is sending early data while the server expects
+		// it, delay the Finished check until HandshakeConfirmed() is
+		// called or until all early data is Read(). Otherwise, complete
+		// authenticating the client now (there is no support for
+		// sending 0.5RTT data to a potential unauthenticated client).
+		if c.phase != readingEarlyData {
+			if err := hs.readClientFinished13(true); err != nil {
+				return err
+			}
+		}
 		c.handshakeComplete = true
 		return nil
 	} else if isResume {
@@ -654,7 +664,12 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			if digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(sigType, signatureAlgorithm, hs.masterSecret); err != nil {
 				break
 			}
-			err = rsa.VerifyPKCS1v15(key, hashFunc, digest, certVerify.signature)
+			if sigType == signatureRSAPSS {
+				signOpts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}
+				err = rsa.VerifyPSS(key, hashFunc, digest, certVerify.signature, signOpts)
+			} else {
+				err = rsa.VerifyPKCS1v15(key, hashFunc, digest, certVerify.signature)
+			}
 		}
 		if err != nil {
 			c.sendAlert(alertBadCertificate)

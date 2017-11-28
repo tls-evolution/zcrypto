@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -766,6 +767,8 @@ Again:
 		b.resize(b.off + i) // shrinks, guaranteed not to reallocate
 	}
 
+	fmt.Printf("==>\n%s\n", hex.Dump(data))
+
 	if typ != recordTypeAlert && len(data) > 0 {
 		// this is a valid non-alert message: reset the count of alerts
 		c.warnCount = 0
@@ -846,6 +849,18 @@ Again:
 		// instead of (early) application data.
 		if typ != want && !(c.isClient && c.config.Renegotiation != RenegotiateNever) &&
 			!(want == recordTypeApplicationData && c.phase == waitingClientFinished) {
+
+			// TLS 1.3: This may be a "New Session Ticket Message"
+			// which is valid any time after the client Finished
+			if c.vers >= VersionTLS13 && data[0] == typeNewSessionTicket {
+				// we need to handle this message OOB as handshake is already finished
+				m := new(newSessionTicketMsg13)
+				if unmarshalAlert := m.unmarshal(data); unmarshalAlert != alertSuccess {
+					return c.in.setErrorLocked(c.sendAlert(unmarshalAlert))
+				}
+				fmt.Printf("WARN: session ticket not implemented yet")
+				goto Again
+			}
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
 		}
 		c.hand.Write(data)
@@ -1070,6 +1085,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			}
 		}
 		copy(b.data[recordHeaderLen+explicitIVLen:], data)
+		fmt.Printf("<==\n%s\n", hex.Dump(b.data))
 		c.out.encrypt(b, explicitIVLen)
 		if _, err := c.write(b.data); err != nil {
 			return n, err
@@ -1137,6 +1153,8 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		} else {
 			m = new(serverHelloMsg)
 		}
+	case typeHelloRetryRequest:
+		m = new(helloRetryRequestMsg)
 	case typeEncryptedExtensions:
 		m = new(encryptedExtensionsMsg)
 	case typeNewSessionTicket:

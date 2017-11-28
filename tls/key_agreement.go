@@ -295,22 +295,29 @@ func hashForServerKeyExchange(sigType, hashFunc uint8, version uint16, slices ..
 // pickTLS12HashForSignature returns a TLS 1.2 hash identifier for signing a
 // ServerKeyExchange given the signature type being used and the client's
 // advertised list of supported signature and hash combinations.
-func pickTLS12HashForSignature(sigType uint8, clientList, serverList []SignatureScheme) (uint8, error) {
+func pickTLS12HashForSignature(keyType uint8, clientList, serverList []SignatureScheme) (SignatureScheme, error) {
 	if len(clientList) == 0 {
 		// If the client didn't specify any signature_algorithms
 		// extension then we can assume that it supports SHA1. See
 		// http://tools.ietf.org/html/rfc5246#section-7.4.1.4.1
-		return hashSHA1, nil
+		switch keyType {
+		case signatureRSA:
+			return PKCS1WithSHA1, nil
+		case signatureECDSA:
+			return ECDSAWithSHA1, nil
+		default:
+			return 0, errors.New("tls: unknown signature algorithm")
+		}
 	}
 
 	panic(fmt.Errorf("Validate this!"))
 
-	for _, sigAndHash := range clientList {
-		if byte(sigAndHash>>8) != sigType {
+	for _, sigAlg := range clientList {
+		if !keySupportsSignatureScheme(keyType, sigAlg) {
 			continue
 		}
-		if isSupportedSignatureAlgorithm(sigAndHash, serverList) {
-			return byte(sigAndHash), nil
+		if isSupportedSignatureAlgorithm(SignatureScheme(keyType), supportedSignatureAlgorithms) {
+			return sigAlg, nil
 		}
 	}
 
@@ -367,7 +374,8 @@ func (ka *signedKeyAgreement) signParameters(config *Config, cert *Certificate, 
 		var tls12HashId uint8
 		var err error
 		if ka.version >= VersionTLS12 {
-			if tls12HashId, err = pickTLS12HashForSignature(ka.sigType, clientHello.supportedSignatureAlgorithms, config.signatureAndHashesForServer()); err != nil {
+			signatureAlgorithm, err = pickTLS12HashForSignature(ka.keyType, clientHello.supportedSignatureAlgorithms)
+			if err != nil {
 				return nil, err
 			}
 			ka.sh.hash = tls12HashId
@@ -790,4 +798,16 @@ func (ka *dheKeyAgreement) generateClientKeyExchange(config *Config, clientHello
 	copy(ckx.ciphertext[2:], yBytes)
 
 	return preMasterSecret, ckx, nil
+}
+
+func keySupportsSignatureScheme(keyType uint8, signatureAlgorithm SignatureScheme) bool {
+	sigType := signatureFromSignatureScheme(signatureAlgorithm)
+	switch sigType {
+	case signatureRSA, signatureRSAPSS:
+		return keyType == signatureRSA
+	case signatureECDSA:
+		return keyType == signatureECDSA
+	default:
+		return false
+	}
 }

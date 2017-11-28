@@ -32,6 +32,10 @@ const (
 	VersionTLS12        = 0x0303
 	VersionTLS13        = 0x0304
 	VersionTLS13Draft18 = 0x7f00 | 18
+	VersionTLS13Draft19 = 0x7f00 | 19
+	VersionTLS13Draft20 = 0x7f00 | 20
+	VersionTLS13Draft21 = 0x7f00 | 21
+	VersionTLS13Draft22 = 0x7f00 | 22
 )
 
 const (
@@ -61,6 +65,7 @@ const (
 	typeClientHello         uint8 = 1
 	typeServerHello         uint8 = 2
 	typeNewSessionTicket    uint8 = 4
+	typeHelloRetryRequest   uint8 = 6
 	typeEncryptedExtensions uint8 = 8
 	typeCertificate         uint8 = 11
 	typeServerKeyExchange   uint8 = 12
@@ -71,6 +76,7 @@ const (
 	typeFinished            uint8 = 20
 	typeCertificateStatus   uint8 = 22
 	typeNextProtocol        uint8 = 67 // Not IANA assigned
+	typeMessageHash         uint8 = 254
 )
 
 // TLS compression types.
@@ -93,6 +99,7 @@ const (
 	extensionPreSharedKey         uint16 = 41
 	extensionEarlyData            uint16 = 42
 	extensionSupportedVersions    uint16 = 43
+	extensionCookie               uint16 = 44
 	extensionPSKKeyExchangeModes  uint16 = 45
 	extensionTicketEarlyDataInfo  uint16 = 46
 	extensionNextProtoNeg         uint16 = 13172 // not IANA assigned
@@ -955,7 +962,9 @@ var configSuppVersArray = [...]uint16{VersionTLS13, VersionTLS12, VersionTLS11, 
 // with TLS 1.3 draft versions included.
 //
 // TODO: remove once TLS 1.3 is finalised.
-var tls13DraftSuppVersArray = [...]uint16{VersionTLS13Draft18, VersionTLS12, VersionTLS11, VersionTLS10, VersionSSL30}
+var tls13DraftSuppVersArray = [...]uint16{
+	VersionTLS13Draft22, VersionTLS13Draft21, VersionTLS13Draft20, VersionTLS13Draft19,
+	VersionTLS13Draft18, VersionTLS12, VersionTLS11, VersionTLS10, VersionSSL30}
 
 // getSupportedVersions returns the protocol versions that are supported by the
 // current configuration.
@@ -1262,6 +1271,12 @@ func unexpectedMessageError(wanted, got interface{}) error {
 }
 
 func isSupportedSignatureAlgorithm(sigAlg SignatureScheme, supportedSignatureAlgorithms []SignatureScheme) bool {
+	// TODO unhack this, PSS should be advertised in
+	// supportedSignatureAlgorithms, but that possibly needs additional
+	// support of PSS public keys and PSS signatures in certificates.
+	if sigAlg == PSSWithSHA256 || sigAlg == PSSWithSHA384 {
+		return true
+	}
 	for _, s := range supportedSignatureAlgorithms {
 		if s == sigAlg {
 			return true
