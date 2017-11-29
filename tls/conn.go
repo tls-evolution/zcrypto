@@ -854,7 +854,7 @@ Again:
 			// which is valid any time after the client Finished
 			if c.vers >= VersionTLS13 && data[0] == typeNewSessionTicket {
 				// we need to handle this message OOB as handshake is already finished
-				m := new(newSessionTicketMsg13)
+				m := &newSessionTicketMsg13{withNonce: c.vers >= VersionTLS13Draft21}
 				if unmarshalAlert := m.unmarshal(data); unmarshalAlert != alertSuccess {
 					return c.in.setErrorLocked(c.sendAlert(unmarshalAlert))
 				}
@@ -1159,7 +1159,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		m = new(encryptedExtensionsMsg)
 	case typeNewSessionTicket:
 		if c.vers >= VersionTLS13 {
-			m = new(newSessionTicketMsg13)
+			m = &newSessionTicketMsg13{withNonce: c.vers >= VersionTLS13Draft21}
 		} else {
 			m = new(newSessionTicketMsg)
 		}

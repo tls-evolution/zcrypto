@@ -2442,6 +2442,8 @@ type newSessionTicketMsg13 struct {
 	raw                []byte
 	lifetime           uint32
 	ageAdd             uint32
+	withNonce          bool
+	nonce              []byte
 	ticket             []byte
 	withEarlyDataInfo  bool
 	maxEarlyDataLength uint32
@@ -2456,6 +2458,7 @@ func (m *newSessionTicketMsg13) equal(i interface{}) bool {
 	return bytes.Equal(m.raw, m1.raw) &&
 		m.lifetime == m1.lifetime &&
 		m.ageAdd == m1.ageAdd &&
+		bytes.Equal(m.nonce, m1.nonce) &&
 		bytes.Equal(m.ticket, m1.ticket) &&
 		m.withEarlyDataInfo == m1.withEarlyDataInfo &&
 		m.maxEarlyDataLength == m1.maxEarlyDataLength
@@ -2469,6 +2472,14 @@ func (m *newSessionTicketMsg13) marshal() (x []byte) {
 	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.6
 	ticketLen := len(m.ticket)
 	length := 12 + ticketLen
+
+	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-21#section-4.6.1
+	nonceLen := 0
+	if m.withNonce {
+		nonceLen = len(m.nonce)
+		length = 13 + nonceLen + ticketLen
+	}
+
 	if m.withEarlyDataInfo {
 		length += 8
 	}
@@ -2487,9 +2498,16 @@ func (m *newSessionTicketMsg13) marshal() (x []byte) {
 	x[10] = uint8(m.ageAdd >> 8)
 	x[11] = uint8(m.ageAdd)
 
-	x[12] = uint8(ticketLen >> 8)
-	x[13] = uint8(ticketLen)
-	copy(x[14:], m.ticket)
+	y := x[12:]
+	if m.withNonce {
+		x[12] = uint8(nonceLen)
+		copy(x[13:13+nonceLen], m.nonce)
+		y = x[13+nonceLen:]
+	}
+
+	y[0] = uint8(ticketLen >> 8)
+	y[1] = uint8(ticketLen)
+	copy(y[2:2+ticketLen], m.ticket)
 
 	if m.withEarlyDataInfo {
 		z := x[14+ticketLen:]
@@ -2527,13 +2545,24 @@ func (m *newSessionTicketMsg13) unmarshal(data []byte) alert {
 	m.ageAdd = uint32(data[8])<<24 | uint32(data[9])<<16 |
 		uint32(data[10])<<8 | uint32(data[11])
 
-	ticketLen := int(data[12])<<8 + int(data[13])
-	if 14+ticketLen > len(data) {
+	if m.withNonce {
+		nonceLen := int(data[12])
+		if nonceLen == 0 || 13+nonceLen+2 > len(data) {
+			return alertDecodeError
+		}
+		m.nonce = data[13 : 13+nonceLen]
+		data = data[13+nonceLen:]
+	} else {
+		data = data[12:]
+	}
+
+	ticketLen := int(data[0])<<8 + int(data[1])
+	if ticketLen == 0 || 2+ticketLen+2 > len(data) {
 		return alertDecodeError
 	}
-	m.ticket = data[14 : 14+ticketLen]
+	m.ticket = data[2 : 2+ticketLen]
 
-	data = data[14+ticketLen:]
+	data = data[2+ticketLen:]
 	extLen := int(data[0])<<8 + int(data[1])
 	if extLen != len(data)-2 {
 		return alertDecodeError
@@ -2549,7 +2578,7 @@ func (m *newSessionTicketMsg13) unmarshal(data []byte) alert {
 		data = data[4:]
 
 		switch extType {
-		case extensionTicketEarlyDataInfo:
+		case extensionEarlyData:
 			if length != 4 {
 				return alertDecodeError
 			}

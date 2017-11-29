@@ -49,9 +49,10 @@ type keySchedule13 struct {
 	handshakeCtx   []byte    // cached handshake context, invalidated on updates.
 	clientRandom   []byte    // Used for keylogging, nil if keylogging is disabled.
 	config         *Config   // Used for KeyLogWriter callback, nil if keylogging is disabled.
+	vers           uint16    // TLS Version
 }
 
-func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte) *keySchedule13 {
+func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte, vers uint16) *keySchedule13 {
 	if config.KeyLogWriter == nil {
 		clientRandom = nil
 		config = nil
@@ -61,6 +62,7 @@ func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte) *
 		transcriptHash: hashForSuite(suite).New(),
 		clientRandom:   clientRandom,
 		config:         config,
+		vers:           vers,
 	}
 }
 
@@ -69,6 +71,10 @@ func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte) *
 func (ks *keySchedule13) setSecret(secret []byte) {
 	hash := hashForSuite(ks.suite)
 	salt := ks.secret
+	if (ks.vers >= VersionTLS13Draft19) && (salt != nil) {
+		h0 := hash.New().Sum(nil)
+		salt = ks.hkdfExpandLabel(hash, salt, h0, "derived", hash.Size())
+	}
 	ks.secret = hkdfExtract(hash, secret, salt)
 }
 
@@ -90,6 +96,30 @@ func (ks *keySchedule13) writeMessageHash(data []byte) {
 }
 
 func (ks *keySchedule13) getLabel(secretLabel secretLabel) (label, keylogType string) {
+	if ks.vers >= VersionTLS13Draft20 {
+		switch secretLabel {
+		case secretResumptionPskBinder:
+			label = "res binder"
+		case secretEarlyClient:
+			label = "c e traffic"
+			keylogType = "CLIENT_EARLY_TRAFFIC_SECRET"
+		case secretHandshakeClient:
+			label = "c hs traffic"
+			keylogType = "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
+		case secretHandshakeServer:
+			label = "s hs traffic"
+			keylogType = "SERVER_HANDSHAKE_TRAFFIC_SECRET"
+		case secretApplicationClient:
+			label = "c ap traffic"
+			keylogType = "CLIENT_TRAFFIC_SECRET_0"
+		case secretApplicationServer:
+			label = "s ap traffic"
+			keylogType = "SERVER_TRAFFIC_SECRET_0"
+		case secretResumption:
+			label = "res master"
+		}
+		return
+	}
 	switch secretLabel {
 	case secretResumptionPskBinder:
 		label = "resumption psk binder key"
@@ -121,7 +151,7 @@ func (ks *keySchedule13) deriveSecret(secretLabel secretLabel) []byte {
 		ks.handshakeCtx = ks.transcriptHash.Sum(nil)
 	}
 	hash := hashForSuite(ks.suite)
-	secret := hkdfExpandLabel(hash, ks.secret, ks.handshakeCtx, label, hash.Size())
+	secret := ks.hkdfExpandLabel(hash, ks.secret, ks.handshakeCtx, label, hash.Size())
 	if keylogType != "" && ks.config != nil {
 		ks.config.writeKeyLog(keylogType, ks.clientRandom, secret)
 	}
@@ -131,8 +161,8 @@ func (ks *keySchedule13) deriveSecret(secretLabel secretLabel) []byte {
 func (ks *keySchedule13) prepareCipher(secretLabel secretLabel) (interface{}, []byte) {
 	trafficSecret := ks.deriveSecret(secretLabel)
 	hash := hashForSuite(ks.suite)
-	key := hkdfExpandLabel(hash, trafficSecret, nil, "key", ks.suite.keyLen)
-	iv := hkdfExpandLabel(hash, trafficSecret, nil, "iv", 12)
+	key := ks.hkdfExpandLabel(hash, trafficSecret, nil, "key", ks.suite.keyLen)
+	iv := ks.hkdfExpandLabel(hash, trafficSecret, nil, "iv", 12)
 	return ks.suite.aead(key, iv), trafficSecret
 }
 
@@ -176,7 +206,7 @@ CurvePreferenceLoop:
 
 	hash := hashForSuite(hs.suite)
 	hashSize := hash.Size()
-	hs.keySchedule = newKeySchedule13(hs.suite, config, hs.clientHello.random)
+	hs.keySchedule = newKeySchedule13(hs.suite, config, hs.clientHello.random, hs.c.vers)
 
 	// Check for PSK and update key schedule with new early secret key
 	isResumed, pskAlert := hs.checkPSK()
@@ -212,8 +242,8 @@ CurvePreferenceLoop:
 	serverCipher, sTrafficSecret := hs.keySchedule.prepareCipher(secretHandshakeServer)
 	c.out.setCipher(c.vers, serverCipher)
 
-	serverFinishedKey := hkdfExpandLabel(hash, sTrafficSecret, nil, "finished", hashSize)
-	hs.clientFinishedKey = hkdfExpandLabel(hash, cTrafficSecret, nil, "finished", hashSize)
+	serverFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, sTrafficSecret, nil, "finished", hashSize)
+	hs.clientFinishedKey = hs.keySchedule.hkdfExpandLabel(hash, cTrafficSecret, nil, "finished", hashSize)
 
 	hs.keySchedule.write(hs.hello13Enc.marshal())
 	if _, err := c.writeRecord(recordTypeHandshake, hs.hello13Enc.marshal()); err != nil {
@@ -525,13 +555,18 @@ func deriveECDHESecret(ks keyShare, secretKey []byte) []byte {
 	return buf
 }
 
-func hkdfExpandLabel(hash crypto.Hash, secret, hashValue []byte, label string, L int) []byte {
-	hkdfLabel := make([]byte, 4+len("TLS 1.3, ")+len(label)+len(hashValue))
+func (ks *keySchedule13) hkdfExpandLabel(hash crypto.Hash, secret, hashValue []byte, label string, L int) []byte {
+	prefix := "TLS 1.3, "
+	if ks.vers >= VersionTLS13Draft20 {
+		prefix = "tls13 "
+	}
+
+	hkdfLabel := make([]byte, 4+len(prefix)+len(label)+len(hashValue))
 	hkdfLabel[0] = byte(L >> 8)
 	hkdfLabel[1] = byte(L)
-	hkdfLabel[2] = byte(len("TLS 1.3, ") + len(label))
-	copy(hkdfLabel[3:], "TLS 1.3, ")
-	z := hkdfLabel[3+len("TLS 1.3, "):]
+	hkdfLabel[2] = byte(len(prefix) + len(label))
+	copy(hkdfLabel[3:], prefix)
+	z := hkdfLabel[3+len(prefix):]
 	copy(z, label)
 	z = z[len(label):]
 	z[0] = byte(len(hashValue))
@@ -617,7 +652,7 @@ func (hs *serverHandshakeState) checkPSK() (isResumed bool, alert alert) {
 
 		hs.keySchedule.setSecret(s.resumptionSecret)
 		binderKey := hs.keySchedule.deriveSecret(secretResumptionPskBinder)
-		binderFinishedKey := hkdfExpandLabel(hash, binderKey, nil, "finished", hashSize)
+		binderFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, binderKey, nil, "finished", hashSize)
 		chHash := hash.New()
 		chHash.Write(hs.clientHello.rawTruncated)
 		expectedBinder := hmacOfSum(hash, chHash, binderFinishedKey)
@@ -703,6 +738,8 @@ func (hs *serverHandshakeState) sendSessionTicket13() error {
 			maxEarlyDataLength: c.config.Max0RTTDataSize,
 			withEarlyDataInfo:  c.config.Max0RTTDataSize > 0,
 			ageAdd:             sessionState.ageAdd,
+			withNonce:          c.vers >= VersionTLS13Draft21,
+			nonce:              []byte{byte(i)},
 			ticket:             ticket,
 		}
 		if _, err := c.writeRecord(recordTypeHandshake, ticketMsg.marshal()); err != nil {
@@ -834,8 +871,8 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	c.in.setCipher(c.vers, serverCipher)
 
 	// Calculate MAC key for Finished messages.
-	serverFinishedKey := hkdfExpandLabel(hash, serverHandshakeSecret, nil, "finished", hashSize)
-	clientFinishedKey := hkdfExpandLabel(hash, clientHandshakeSecret, nil, "finished", hashSize)
+	serverFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, serverHandshakeSecret, nil, "finished", hashSize)
+	clientFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, clientHandshakeSecret, nil, "finished", hashSize)
 
 	msg, err := c.readHandshake()
 	if err != nil {

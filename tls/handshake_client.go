@@ -292,7 +292,7 @@ retry:
 	}
 
 	if c.vers >= VersionTLS13 {
-		hs.keySchedule = newKeySchedule13(hs.suite, c.config, hs.hello.random)
+		hs.keySchedule = newKeySchedule13(hs.suite, c.config, hs.hello.random, c.vers)
 		if hrrMsg != nil {
 			if c.vers >= VersionTLS13Draft19 {
 				hs.keySchedule.writeMessageHash(hello1)
