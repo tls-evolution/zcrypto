@@ -28,15 +28,14 @@ type clientHandshakeState struct {
 	masterSecret    []byte
 	preMasterSecret []byte
 	session         *ClientSessionState
+	serverHello     *serverHelloMsg
 
 	// TLS 1.0-1.2 fields
-	serverHello  *serverHelloMsg
 	finishedHash finishedHash
 
 	// TLS 1.3 fields
-	serverHello13 *serverHelloMsg13
-	keySchedule   *keySchedule13
-	privateKey    []byte
+	keySchedule *keySchedule13
+	privateKey  []byte
 }
 
 func makeClientHello(config *Config) (*clientHelloMsg, error) {
@@ -257,11 +256,6 @@ retry:
 		c.handshakeLog.ServerHello = m.MakeLog()
 		vers = m.vers
 		cipherSuite = m.cipherSuite
-	case *serverHelloMsg13:
-		hs.serverHello13 = m
-		c.handshakeLog.ServerHello = m.MakeLog()
-		vers = m.vers
-		cipherSuite = m.cipherSuite
 	case *helloRetryRequestMsg:
 		if m.cookie != nil {
 			copy(hs.hello.cookie, m.cookie)
@@ -303,7 +297,7 @@ retry:
 			}
 		}
 		hs.keySchedule.write(hs.hello.marshal())
-		hs.keySchedule.write(hs.serverHello13.marshal())
+		hs.keySchedule.write(hs.serverHello.marshal())
 	}
 
 	var isResume bool

@@ -365,27 +365,7 @@ func (m *serverHelloMsg) MakeLog() *ServerHello {
 	}
 	sh.ExtendedMasterSecret = m.extendedMasterSecret
 	sh.Raw = m.raw
-	return sh
-}
 
-func (m *serverHelloMsg13) MakeLog( /*retryRequest *helloRetryRequestMsg*/ ) *ServerHello {
-	sh := new(ServerHello)
-	sh.Version = TLSVersion(m.vers)
-	sh.Random = make([]byte, len(m.random))
-	copy(sh.Random, m.random)
-	sh.CipherSuite = CipherSuite(m.cipherSuite)
-	sh.Raw = m.raw
-	/*
-		if retryRequest != nil {
-			sh.RetryRequest = new(HelloRetryRequest)
-			sh.RetryRequest.Cookie = retryRequest.cookie
-			sh.RetryRequest.KeyShare.Group = retryRequest.keyShare.group
-			if retryRequest.hasCipherSuite {
-				sh.RetryRequest.CypherSuite = new(uint16)
-				*sh.RetryRequest.CypherSuite = retryRequest.cipherSuite
-			}
-		}
-	*/
 	sh.KeyShare.Group = m.keyShare.group
 	sh.KeyShare.Data = m.keyShare.data
 	return sh

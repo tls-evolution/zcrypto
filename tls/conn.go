@@ -1148,11 +1148,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	case typeClientHello:
 		m = new(clientHelloMsg)
 	case typeServerHello:
-		if isTLS13ServerHello(data) {
-			m = new(serverHelloMsg13)
-		} else {
-			m = new(serverHelloMsg)
-		}
+		m = new(serverHelloMsg)
 	case typeHelloRetryRequest:
 		m = new(helloRetryRequestMsg)
 	case typeEncryptedExtensions:

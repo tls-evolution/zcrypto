@@ -801,6 +801,11 @@ type serverHelloMsg struct {
 	extendedMasterSecret         bool
 	alpnProtocol                 string
 	unknownExtensions            [][]byte
+
+	// TLS 1.3
+	keyShare    keyShare
+	psk         bool
+	pskIdentity uint16
 }
 
 func (m *serverHelloMsg) equal(i interface{}) bool {
@@ -832,7 +837,11 @@ func (m *serverHelloMsg) equal(i interface{}) bool {
 		bytes.Equal(m.secureRenegotiation, m1.secureRenegotiation) &&
 		m.extendedMasterSecret == m1.extendedMasterSecret &&
 		m.alpnProtocol == m1.alpnProtocol &&
-		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions)
+		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions) &&
+		m.keyShare.group == m1.keyShare.group &&
+		bytes.Equal(m.keyShare.data, m1.keyShare.data) &&
+		m.psk == m1.psk &&
+		m.pskIdentity == m1.pskIdentity
 }
 
 func (m *serverHelloMsg) marshal() []byte {
@@ -892,6 +901,19 @@ func (m *serverHelloMsg) marshal() []byte {
 			extensionsLength += len(ext)
 		}
 	}
+	if m.keyShare.group != 0 {
+		extensionsLength += 4 + len(m.keyShare.data)
+		numExtensions++
+	}
+	if m.psk {
+		extensionsLength += 2
+		numExtensions++
+	}
+	if m.vers >= VersionTLS13 {
+		extensionsLength += 2
+		numExtensions++
+	}
+
 	if numExtensions > 0 {
 		extensionsLength += 4 * numExtensions
 		length += 2 + extensionsLength
@@ -902,8 +924,13 @@ func (m *serverHelloMsg) marshal() []byte {
 	x[1] = uint8(length >> 16)
 	x[2] = uint8(length >> 8)
 	x[3] = uint8(length)
-	x[4] = uint8(m.vers >> 8)
-	x[5] = uint8(m.vers)
+	if m.vers >= VersionTLS13 {
+		x[4] = 3
+		x[5] = 3
+	} else {
+		x[4] = uint8(m.vers >> 8)
+		x[5] = uint8(m.vers)
+	}
 	copy(x[6:38], m.random)
 	x[38] = uint8(len(m.sessionId))
 	copy(x[39:39+len(m.sessionId)], m.sessionId)
@@ -917,6 +944,14 @@ func (m *serverHelloMsg) marshal() []byte {
 		z[0] = byte(extensionsLength >> 8)
 		z[1] = byte(extensionsLength)
 		z = z[2:]
+	}
+	if m.vers >= VersionTLS13 {
+		z[0] = byte(extensionSupportedVersions >> 8)
+		z[1] = byte(extensionSupportedVersions)
+		z[3] = 2
+		z[4] = uint8(m.vers >> 8)
+		z[5] = uint8(m.vers)
+		z = z[6:]
 	}
 	if m.nextProtoNeg {
 		z[0] = byte(extensionNextProtoNeg >> 8)
@@ -1005,7 +1040,32 @@ func (m *serverHelloMsg) marshal() []byte {
 			z = z[len(ext):]
 		}
 	}
+	if m.keyShare.group != 0 {
+		z[0] = uint8(extensionKeyShare >> 8)
+		z[1] = uint8(extensionKeyShare)
+		l := 4 + len(m.keyShare.data)
+		z[2] = uint8(l >> 8)
+		z[3] = uint8(l)
+		z[4] = uint8(m.keyShare.group >> 8)
+		z[5] = uint8(m.keyShare.group)
+		l -= 4
+		z[6] = uint8(l >> 8)
+		z[7] = uint8(l)
+		copy(z[8:], m.keyShare.data)
+		z = z[8+l:]
+	}
+
+	if m.psk {
+		z[0] = byte(extensionPreSharedKey >> 8)
+		z[1] = byte(extensionPreSharedKey)
+		z[3] = 2
+		z[4] = byte(m.pskIdentity >> 8)
+		z[5] = byte(m.pskIdentity)
+		z = z[6:]
+	}
+
 	m.raw = x
+
 	return x
 }
 
@@ -1016,18 +1076,26 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	m.raw = data
 	m.vers = uint16(data[4])<<8 | uint16(data[5])
 	m.random = data[6:38]
-	sessionIdLen := int(data[38])
-	if sessionIdLen > 32 || len(data) < 39+sessionIdLen {
-		return alertDecodeError
+
+	if m.vers >= VersionTLS13 && m.vers <= VersionTLS13Draft21 {
+		// draft 18-21 backward compatibility
+		data = data[38:]
+		m.cipherSuite = uint16(data[0])<<8 | uint16(data[1])
+		data = data[2:]
+	} else {
+		sessionIdLen := int(data[38])
+		if sessionIdLen > 32 || len(data) < 39+sessionIdLen {
+			return alertDecodeError
+		}
+		m.sessionId = data[39 : 39+sessionIdLen]
+		data = data[39+sessionIdLen:]
+		if len(data) < 3 {
+			return alertDecodeError
+		}
+		m.cipherSuite = uint16(data[0])<<8 | uint16(data[1])
+		m.compressionMethod = data[2]
+		data = data[3:]
 	}
-	m.sessionId = data[39 : 39+sessionIdLen]
-	data = data[39+sessionIdLen:]
-	if len(data) < 3 {
-		return alertDecodeError
-	}
-	m.cipherSuite = uint16(data[0])<<8 | uint16(data[1])
-	m.compressionMethod = data[2]
-	data = data[3:]
 
 	m.nextProtoNeg = false
 	m.nextProtos = nil
@@ -1038,6 +1106,10 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	m.extendedMasterSecret = false
 	m.alpnProtocol = ""
 	m.unknownExtensions = [][]byte(nil)
+	m.keyShare.group = 0
+	m.keyShare.data = nil
+	m.psk = false
+	m.pskIdentity = 0
 
 	if len(data) == 0 {
 		// ServerHello is optionally followed by extension data
@@ -1051,6 +1123,14 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	data = data[2:]
 	if len(data) != extensionsLength {
 		return alertDecodeError
+	}
+
+	svData := findExtension(data, extensionSupportedVersions)
+	if svData != nil {
+		if len(svData) != 2 {
+			return alertDecodeError
+		}
+		m.vers = uint16(svData[0])<<8 | uint16(svData[1])
 	}
 
 	for len(data) != 0 {
@@ -1154,6 +1234,25 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 				m.scts = append(m.scts, d[:sctLen])
 				d = d[sctLen:]
 			}
+		case extensionKeyShare:
+			d := data[:length]
+
+			if len(d) < 4 {
+				return alertDecodeError
+			}
+			m.keyShare.group = CurveID(d[0])<<8 | CurveID(d[1])
+			l := int(d[2])<<8 | int(d[3])
+			d = d[4:]
+			if len(d) != l {
+				return alertDecodeError
+			}
+			m.keyShare.data = d[:l]
+		case extensionPreSharedKey:
+			if length != 2 {
+				return alertDecodeError
+			}
+			m.psk = true
+			m.pskIdentity = uint16(data[0])<<8 | uint16(data[1])
 		default:
 			fullExt := append(fullData[:4], data[:length]...)
 			m.unknownExtensions = append(m.unknownExtensions, fullExt)
@@ -1162,148 +1261,6 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	}
 
 	return alertSuccess
-}
-
-type serverHelloMsg13 struct {
-	raw         []byte
-	vers        uint16
-	random      []byte
-	cipherSuite uint16
-	keyShare    keyShare
-	psk         bool
-	pskIdentity uint16
-}
-
-func (m *serverHelloMsg13) equal(i interface{}) bool {
-	m1, ok := i.(*serverHelloMsg13)
-	if !ok {
-		return false
-	}
-
-	return bytes.Equal(m.raw, m1.raw) &&
-		m.vers == m1.vers &&
-		bytes.Equal(m.random, m1.random) &&
-		m.cipherSuite == m1.cipherSuite &&
-		m.keyShare.group == m1.keyShare.group &&
-		bytes.Equal(m.keyShare.data, m1.keyShare.data) &&
-		m.psk == m1.psk &&
-		m.pskIdentity == m1.pskIdentity
-}
-
-func (m *serverHelloMsg13) marshal() []byte {
-	if m.raw != nil {
-		return m.raw
-	}
-
-	length := 38
-	if m.keyShare.group != 0 {
-		length += 8 + len(m.keyShare.data)
-	}
-	if m.psk {
-		length += 6
-	}
-
-	x := make([]byte, 4+length)
-	x[0] = typeServerHello
-	x[1] = uint8(length >> 16)
-	x[2] = uint8(length >> 8)
-	x[3] = uint8(length)
-	x[4] = uint8(m.vers >> 8)
-	x[5] = uint8(m.vers)
-	copy(x[6:38], m.random)
-	x[38] = uint8(m.cipherSuite >> 8)
-	x[39] = uint8(m.cipherSuite)
-
-	z := x[42:]
-	x[40] = uint8(len(z) >> 8)
-	x[41] = uint8(len(z))
-
-	if m.psk {
-		z[0] = byte(extensionPreSharedKey >> 8)
-		z[1] = byte(extensionPreSharedKey)
-		z[3] = 2
-		z[4] = byte(m.pskIdentity >> 8)
-		z[5] = byte(m.pskIdentity)
-		z = z[6:]
-	}
-
-	if m.keyShare.group != 0 {
-		z[0] = uint8(extensionKeyShare >> 8)
-		z[1] = uint8(extensionKeyShare)
-		l := 4 + len(m.keyShare.data)
-		z[2] = uint8(l >> 8)
-		z[3] = uint8(l)
-		z[4] = uint8(m.keyShare.group >> 8)
-		z[5] = uint8(m.keyShare.group)
-		l -= 4
-		z[6] = uint8(l >> 8)
-		z[7] = uint8(l)
-		copy(z[8:], m.keyShare.data)
-	}
-
-	m.raw = x
-	return x
-}
-
-func (m *serverHelloMsg13) unmarshal(data []byte) alert {
-	if len(data) < 50 {
-		return alertDecodeError
-	}
-	m.raw = data
-	m.vers = uint16(data[4])<<8 | uint16(data[5])
-	m.random = data[6:38]
-	m.cipherSuite = uint16(data[38])<<8 | uint16(data[39])
-	m.psk = false
-	m.pskIdentity = 0
-
-	extensionsLength := int(data[40])<<8 | int(data[41])
-	data = data[42:]
-	if len(data) != extensionsLength {
-		return alertDecodeError
-	}
-
-	for len(data) != 0 {
-		if len(data) < 4 {
-			return alertDecodeError
-		}
-		extension := uint16(data[0])<<8 | uint16(data[1])
-		length := int(data[2])<<8 | int(data[3])
-		data = data[4:]
-		if len(data) < length {
-			return alertDecodeError
-		}
-
-		switch extension {
-		default:
-			return alertDecodeError
-		case extensionPreSharedKey:
-			if length != 2 {
-				return alertDecodeError
-			}
-			m.psk = true
-			m.pskIdentity = uint16(data[0])<<8 | uint16(data[1])
-		case extensionKeyShare:
-			if length < 2 {
-				return alertDecodeError
-			}
-			m.keyShare.group = CurveID(data[0])<<8 | CurveID(data[1])
-			if length-4 != int(data[2])<<8|int(data[3]) {
-				return alertDecodeError
-			}
-			m.keyShare.data = data[4:length]
-		}
-		data = data[length:]
-	}
-
-	return alertSuccess
-}
-
-func isTLS13ServerHello(data []byte) bool {
-	if len(data) <= 5 {
-		return false
-	}
-	vers := uint16(data[4])<<8 | uint16(data[5])
-	return vers >= VersionTLS13
 }
 
 type encryptedExtensionsMsg struct {
@@ -2679,4 +2636,23 @@ func eqKeyShares(x, y []keyShare) bool {
 		}
 	}
 	return true
+}
+
+func findExtension(data []byte, extensionType uint16) []byte {
+	for len(data) != 0 {
+		if len(data) < 4 {
+			return nil
+		}
+		extension := uint16(data[0])<<8 | uint16(data[1])
+		length := int(data[2])<<8 | int(data[3])
+		data = data[4:]
+		if len(data) < length {
+			return nil
+		}
+		if extension == extensionType {
+			return data[:length]
+		}
+		data = data[length:]
+	}
+	return nil
 }
