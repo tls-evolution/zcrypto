@@ -6,8 +6,8 @@ package tls
 
 import (
 	"crypto"
-	//"crypto/dsa"
-	//"crypto/ecdsa"
+	"crypto/dsa"
+	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/md5"
 	"crypto/rand"
@@ -15,7 +15,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
-	//"encoding/asn1"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
@@ -434,88 +434,86 @@ func (ka *signedKeyAgreement) signParameters(config *Config, cert *Certificate, 
 }
 
 func (ka *signedKeyAgreement) verifyParameters(config *Config, clientHello *clientHelloMsg, serverHello *serverHelloMsg, cert *x509.Certificate, params []byte, sig []byte) error {
-	panic(fmt.Errorf("currently disabled"))
-	/*
+	if len(sig) < 2 {
+		return errServerKeyExchange
+	}
+
+	var tls12HashId uint8
+	if ka.version >= VersionTLS12 {
+		// handle SignatureAndHashAlgorithm
+		var sigAndHash []uint8
+		sigAndHash, sig = sig[:2], sig[2:]
+		tls12HashId = sigAndHash[0]
+		ka.sh = (SignatureScheme(tls12HashId) << 8) | SignatureScheme(sigAndHash[1])
+		fmt.Printf("ka.sh = %04x\n %02x ?= %02x\n", ka.sh, sigAndHash[1], ka.sigType)
+		if sigAndHash[1] != ka.sigType {
+			return errServerKeyExchange
+		}
 		if len(sig) < 2 {
 			return errServerKeyExchange
 		}
 
-		var tls12HashId uint8
-		if ka.version >= VersionTLS12 {
-			// handle SignatureAndHashAlgorithm
-			var sigAndHash []uint8
-			sigAndHash, sig = sig[:2], sig[2:]
-			tls12HashId = sigAndHash[0]
-			ka.sh = (SignatureScheme)((tls12HashId << 8) | sigAndHash[1])
-			if sigAndHash[1] != ka.sigType {
-				return errServerKeyExchange
-			}
-			if len(sig) < 2 {
-				return errServerKeyExchange
-			}
-
-			if !isSupportedSignatureAndHash(signatureAndHash{ka.sigType, tls12HashId}, config.signatureAndHashesForClient()) {
-				return errors.New("tls: unsupported hash function for ServerKeyExchange")
-			}
+		if !isSupportedSignatureAndHash(SignatureScheme(ka.sigType)|(SignatureScheme(tls12HashId)<<8), config.signatureAndHashesForClient()) {
+			return errors.New("tls: unsupported hash function for ServerKeyExchange")
 		}
-		sigLen := int(sig[0])<<8 | int(sig[1])
-		if sigLen+2 != len(sig) {
-			return errServerKeyExchange
-		}
-		sig = sig[2:]
-		ka.raw = sig
+	}
+	sigLen := int(sig[0])<<8 | int(sig[1])
+	if sigLen+2 != len(sig) {
+		return errServerKeyExchange
+	}
+	sig = sig[2:]
+	ka.raw = sig
 
-		digest, hashFunc, err := hashForServerKeyExchange(ka.sigType, tls12HashId, ka.version, clientHello.random, serverHello.random, params)
-		if err != nil {
+	digest, hashFunc, err := hashForServerKeyExchange(ka.sigType, tls12HashId, ka.version, clientHello.random, serverHello.random, params)
+	if err != nil {
+		return err
+	}
+
+	switch ka.sigType {
+	case signatureECDSA:
+		augECDSA, ok := cert.PublicKey.(*x509.AugmentedECDSA)
+		pubKey := augECDSA.Pub
+		if !ok {
+			return errors.New("ECDHE ECDSA: could not covert cert.PublicKey to x509.AugmentedECDSA")
+		}
+		ecdsaSig := new(ecdsaSignature)
+		if _, err := asn1.Unmarshal(sig, ecdsaSig); err != nil {
 			return err
 		}
-
-		switch ka.sigType {
-		case signatureECDSA:
-			augECDSA, ok := cert.PublicKey.(*x509.AugmentedECDSA)
-			pubKey := augECDSA.Pub
-			if !ok {
-				return errors.New("ECDHE ECDSA: could not covert cert.PublicKey to x509.AugmentedECDSA")
-			}
-			ecdsaSig := new(ecdsaSignature)
-			if _, err := asn1.Unmarshal(sig, ecdsaSig); err != nil {
-				return err
-			}
-			if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
-				return errors.New("ECDSA signature contained zero or negative values")
-			}
-			if !ecdsa.Verify(pubKey, digest, ecdsaSig.R, ecdsaSig.S) {
-				return errors.New("ECDSA verification failure")
-			}
-		case signatureRSA:
-			pubKey, ok := cert.PublicKey.(*rsa.PublicKey)
-			if !ok {
-				return errors.New("ECDHE RSA requires a RSA server public key")
-			}
-			if err := rsa.VerifyPKCS1v15(pubKey, hashFunc, digest, sig); err != nil {
-				return err
-			}
-		case signatureDSA:
-			pubKey, ok := cert.PublicKey.(*dsa.PublicKey)
-			if !ok {
-				return errors.New("DSS ciphers require a DSA server public key")
-			}
-			dsaSig := new(dsaSignature)
-			if _, err := asn1.Unmarshal(sig, dsaSig); err != nil {
-				return err
-			}
-			if dsaSig.R.Sign() <= 0 || dsaSig.S.Sign() <= 0 {
-				return errors.New("DSA signature contained zero or negative values")
-			}
-			if !dsa.Verify(pubKey, digest, dsaSig.R, dsaSig.S) {
-				return errors.New("DSA verification failure")
-			}
-		default:
-			return errors.New("unknown ECDHE signature algorithm")
+		if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
+			return errors.New("ECDSA signature contained zero or negative values")
 		}
-		ka.valid = true
-		return nil
-	*/
+		if !ecdsa.Verify(pubKey, digest, ecdsaSig.R, ecdsaSig.S) {
+			return errors.New("ECDSA verification failure")
+		}
+	case signatureRSA:
+		pubKey, ok := cert.PublicKey.(*rsa.PublicKey)
+		if !ok {
+			return errors.New("ECDHE RSA requires a RSA server public key")
+		}
+		if err := rsa.VerifyPKCS1v15(pubKey, hashFunc, digest, sig); err != nil {
+			return err
+		}
+	case signatureDSA:
+		pubKey, ok := cert.PublicKey.(*dsa.PublicKey)
+		if !ok {
+			return errors.New("DSS ciphers require a DSA server public key")
+		}
+		dsaSig := new(dsaSignature)
+		if _, err := asn1.Unmarshal(sig, dsaSig); err != nil {
+			return err
+		}
+		if dsaSig.R.Sign() <= 0 || dsaSig.S.Sign() <= 0 {
+			return errors.New("DSA signature contained zero or negative values")
+		}
+		if !dsa.Verify(pubKey, digest, dsaSig.R, dsaSig.S) {
+			return errors.New("DSA verification failure")
+		}
+	default:
+		return errors.New("unknown ECDHE signature algorithm")
+	}
+	ka.valid = true
+	return nil
 }
 
 // ecdheRSAKeyAgreement implements a TLS key agreement where the server

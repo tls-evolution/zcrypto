@@ -348,6 +348,15 @@ type ClientSessionCache interface {
 	Put(sessionKey string, cs *ClientSessionState)
 }
 
+func isSupportedSignatureAndHash(sigHash SignatureScheme, sigHashes []SignatureScheme) bool {
+	for _, s := range sigHashes {
+		if s == sigHash {
+			return true
+		}
+	}
+	return false
+}
+
 // SignatureScheme identifies a signature algorithm supported by TLS. See
 // https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.3.
 type SignatureScheme uint16
@@ -1030,6 +1039,14 @@ func (c *Config) getCertificate(clientHello *ClientHelloInfo) (*Certificate, err
 
 	// If nothing matches, return the first certificate.
 	return &c.Certificates[0], nil
+}
+
+func (c *Config) signatureAndHashesForServer() []SignatureScheme {
+	return supportedSignatureAlgorithms
+}
+
+func (c *Config) signatureAndHashesForClient() []SignatureScheme {
+	return supportedSignatureAlgorithms
 }
 
 // BuildNameToCertificate parses c.Certificates and builds c.NameToCertificate

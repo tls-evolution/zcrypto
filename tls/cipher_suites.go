@@ -103,12 +103,7 @@ type cipherSuite struct {
 	flags  int
 	cipher func(key, iv []byte, isRead bool) interface{}
 	mac    func(version uint16, macKey []byte) macFunction
-	aead   func(key, fixedNonce []byte) *tlsAead
-}
-
-type tlsAead struct {
-	cipher.AEAD
-	explicitNonce bool
+	aead   func(key, fixedNonce []byte) cipher.AEAD
 }
 
 var implementedCipherSuites = []*cipherSuite{
@@ -296,6 +291,15 @@ type macFunction interface {
 	MAC(digestBuf, seq, header, length, data []byte) []byte
 }
 
+type aead interface {
+	cipher.AEAD
+
+	// explicitIVLen returns the number of bytes used by the explicit nonce
+	// that is included in the record. This is eight for older AEADs and
+	// zero for modern ones.
+	explicitNonceLen() int
+}
+
 // fixedNonceAEAD wraps an AEAD and prefixes a fixed portion of the nonce to
 // each call.
 type fixedNonceAEAD struct {
@@ -306,8 +310,9 @@ type fixedNonceAEAD struct {
 	aead                 cipher.AEAD
 }
 
-func (f *fixedNonceAEAD) NonceSize() int { return 8 }
-func (f *fixedNonceAEAD) Overhead() int  { return f.aead.Overhead() }
+func (f *fixedNonceAEAD) NonceSize() int        { return 8 }
+func (f *fixedNonceAEAD) Overhead() int         { return f.aead.Overhead() }
+func (f *fixedNonceAEAD) explicitNonceLen() int { return 8 }
 
 func (f *fixedNonceAEAD) Seal(out, nonce, plaintext, additionalData []byte) []byte {
 	copy(f.sealNonce[len(f.sealNonce)-8:], nonce)
@@ -357,7 +362,7 @@ func (f *xorNonceAEAD) Open(out, nonce, plaintext, additionalData []byte) ([]byt
 	return result, err
 }
 
-func aeadAESGCM12(key, fixedNonce []byte) *tlsAead {
+func aeadAESGCM12(key, fixedNonce []byte) cipher.AEAD {
 	aes, err := aes.NewCipher(key)
 	if err != nil {
 		panic(err)
@@ -371,10 +376,10 @@ func aeadAESGCM12(key, fixedNonce []byte) *tlsAead {
 	copy(nonce1, fixedNonce)
 	copy(nonce2, fixedNonce)
 
-	return &tlsAead{&fixedNonceAEAD{nonce1, nonce2, aead}, true}
+	return &fixedNonceAEAD{nonce1, nonce2, aead}
 }
 
-func aeadAESGCM13(key, fixedNonce []byte) *tlsAead {
+func aeadAESGCM13(key, fixedNonce []byte) cipher.AEAD {
 	//fmt.Println("aeadAESGCM13:key:", key, ":fixedNonce:", fixedNonce)
 	aes, err := aes.NewCipher(key)
 	if err != nil {
@@ -391,15 +396,15 @@ func aeadAESGCM13(key, fixedNonce []byte) *tlsAead {
 	// return ret
 	// TODO adapted diff
 	//return &tlsAead{ret, true} // TODO is the nonce really explicit?
-	return &tlsAead{ret, false}
+	return ret
 }
 
-func aeadCHACHA20POLY1305(key, fixedNonce []byte) *tlsAead {
+func aeadCHACHA20POLY1305(key, fixedNonce []byte) cipher.AEAD {
 	aead, err := newChaCha20Poly1305(key)
 	if err != nil {
 		panic(err)
 	}
-	return &tlsAead{aead, false}
+	return aead
 }
 
 // ssl30MAC implements the SSLv3 MAC function, as defined in
