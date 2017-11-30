@@ -380,7 +380,6 @@ func aeadAESGCM12(key, fixedNonce []byte) cipher.AEAD {
 }
 
 func aeadAESGCM13(key, fixedNonce []byte) cipher.AEAD {
-	//fmt.Println("aeadAESGCM13:key:", key, ":fixedNonce:", fixedNonce)
 	aes, err := aes.NewCipher(key)
 	if err != nil {
 		panic(err)
@@ -392,10 +391,6 @@ func aeadAESGCM13(key, fixedNonce []byte) cipher.AEAD {
 
 	ret := &xorNonceAEAD{aead: aead}
 	copy(ret.nonceMask[:], fixedNonce)
-	// TODO original diff
-	// return ret
-	// TODO adapted diff
-	//return &tlsAead{ret, true} // TODO is the nonce really explicit?
 	return ret
 }
 
@@ -404,7 +399,10 @@ func aeadCHACHA20POLY1305(key, fixedNonce []byte) cipher.AEAD {
 	if err != nil {
 		panic(err)
 	}
-	return aead
+
+	ret := &xorNonceAEAD{aead: aead}
+	copy(ret.nonceMask[:], fixedNonce)
+	return ret
 }
 
 // ssl30MAC implements the SSLv3 MAC function, as defined in
