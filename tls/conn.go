@@ -10,7 +10,7 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"crypto/subtle"
-	"encoding/hex"
+	//"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -767,7 +767,7 @@ Again:
 		b.resize(b.off + i) // shrinks, guaranteed not to reallocate
 	}
 
-	fmt.Printf("==>\n%s\n", hex.Dump(data))
+	//fmt.Printf("==>\n%s\n", hex.Dump(data))
 
 	if typ != recordTypeAlert && len(data) > 0 {
 		// this is a valid non-alert message: reset the count of alerts
@@ -858,7 +858,7 @@ Again:
 				if unmarshalAlert := m.unmarshal(data); unmarshalAlert != alertSuccess {
 					return c.in.setErrorLocked(c.sendAlert(unmarshalAlert))
 				}
-				fmt.Printf("WARN: session ticket not implemented yet")
+				//fmt.Printf("WARN: session ticket not implemented yet")
 				goto Again
 			}
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
@@ -1068,7 +1068,11 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		if c.vers >= VersionTLS13 {
 			// TLS 1.3 froze the record layer version at { 3, 1 }.
 			// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.1.
+			// But for draft 22, this was changed to { 3, 3 }.
 			vers = VersionTLS10
+			if c.vers >= VersionTLS13Draft22 {
+				vers = VersionTLS12
+			}
 		}
 		b.data[1] = byte(vers >> 8)
 		b.data[2] = byte(vers)
@@ -1085,7 +1089,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			}
 		}
 		copy(b.data[recordHeaderLen+explicitIVLen:], data)
-		fmt.Printf("<==\n%s\n", hex.Dump(b.data))
+		//fmt.Printf("<==\n%s\n", hex.Dump(b.data))
 		c.out.encrypt(b, explicitIVLen)
 		if _, err := c.write(b.data); err != nil {
 			return n, err
@@ -1094,7 +1098,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		data = data[m:]
 	}
 
-	if typ == recordTypeChangeCipherSpec {
+	if typ == recordTypeChangeCipherSpec && c.vers < VersionTLS13 {
 		if err := c.out.changeCipherSpec(); err != nil {
 			return n, c.sendAlertLocked(err.(alert))
 		}

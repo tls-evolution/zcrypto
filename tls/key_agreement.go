@@ -445,7 +445,7 @@ func (ka *signedKeyAgreement) verifyParameters(config *Config, clientHello *clie
 		sigAndHash, sig = sig[:2], sig[2:]
 		tls12HashId = sigAndHash[0]
 		ka.sh = (SignatureScheme(tls12HashId) << 8) | SignatureScheme(sigAndHash[1])
-		fmt.Printf("ka.sh = %04x\n %02x ?= %02x\n", ka.sh, sigAndHash[1], ka.sigType)
+		//fmt.Printf("ka.sh = %04x\n %02x ?= %02x\n", ka.sh, sigAndHash[1], ka.sigType)
 		if sigAndHash[1] != ka.sigType {
 			return errServerKeyExchange
 		}
