@@ -12,7 +12,6 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"errors"
-	"fmt"
 	"hash"
 )
 
@@ -35,8 +34,12 @@ func pHash(result, secret, seed []byte, hash func() hash.Hash) {
 		h.Write(a)
 		h.Write(seed)
 		b := h.Sum(nil)
-		copy(result[j:], b)
-		j += len(b)
+		todo := len(b)
+		if j+todo > len(result) {
+			todo = len(result) - j
+		}
+		copy(result[j:j+todo], b)
+		j += todo
 
 		h.Reset()
 		h.Write(a)
@@ -82,7 +85,7 @@ func prf30(result, secret, label, seed []byte) {
 
 	done := 0
 	i := 0
-	// RFC 5246 section 6.3 says that the largest PRF output needed is 128
+	// RFC5246 section 6.3 says that the largest PRF output needed is 128
 	// bytes. Since no more ciphersuites will be added to SSLv3, this will
 	// remain true. Each iteration gives us 16 bytes so 10 iterations will
 	// be sufficient.
@@ -107,6 +110,13 @@ func prf30(result, secret, label, seed []byte) {
 	}
 }
 
+func exportPRF30(result, secret, label, seed []byte) {
+	hash := md5.New()
+	hash.Write(secret)
+	hash.Write(seed)
+	copy(result, hash.Sum(nil))
+}
+
 const (
 	tlsRandomLength      = 32 // Length of a random nonce in TLS 1.1.
 	masterSecretLength   = 48 // Length of a master secret in TLS 1.1.
@@ -114,40 +124,47 @@ const (
 )
 
 var masterSecretLabel = []byte("master secret")
+var extendedMasterSecretLabel = []byte("extended master secret")
 var keyExpansionLabel = []byte("key expansion")
 var clientFinishedLabel = []byte("client finished")
 var serverFinishedLabel = []byte("server finished")
+var clientFinalKeyLabel = []byte("client write key")
+var serverFinalKeyLabel = []byte("server write key")
+var finalIVLabel = []byte("IV block")
 
-func prfAndHashForVersion(version uint16, suite *cipherSuite) (func(result, secret, label, seed []byte), crypto.Hash) {
+func prfForVersion(version uint16, suite *cipherSuite) func(result, secret, label, seed []byte) {
 	switch version {
 	case VersionSSL30:
-		return prf30, crypto.Hash(0)
+		return prf30
 	case VersionTLS10, VersionTLS11:
-		return prf10, crypto.Hash(0)
+		return prf10
 	case VersionTLS12:
 		if suite.flags&suiteSHA384 != 0 {
-			return prf12(sha512.New384), crypto.SHA384
+			return prf12(sha512.New384)
 		}
-		return prf12(sha256.New), crypto.SHA256
+		return prf12(sha256.New)
 	default:
 		panic("unknown version")
 	}
 }
 
-func prfForVersion(version uint16, suite *cipherSuite) func(result, secret, label, seed []byte) {
-	prf, _ := prfAndHashForVersion(version, suite)
-	return prf
-}
-
 // masterFromPreMasterSecret generates the master secret from the pre-master
 // secret. See http://tools.ietf.org/html/rfc5246#section-8.1
 func masterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecret, clientRandom, serverRandom []byte) []byte {
-	seed := make([]byte, 0, len(clientRandom)+len(serverRandom))
-	seed = append(seed, clientRandom...)
-	seed = append(seed, serverRandom...)
-
+	seed := make([]byte, len(clientRandom)+len(serverRandom))
+	copy(seed[0:len(clientRandom)], clientRandom)
+	copy(seed[len(clientRandom):], serverRandom)
 	masterSecret := make([]byte, masterSecretLength)
-	prfForVersion(version, suite)(masterSecret, preMasterSecret, masterSecretLabel, seed)
+	prfForVersion(version, suite)(masterSecret, preMasterSecret, masterSecretLabel, seed[0:])
+	return masterSecret
+}
+
+// extendedMasterFromPreMasterSecret generates the master secret from the
+// pre-master secret when the Triple Handshake fix is in effect. See
+// https://tools.ietf.org/html/draft-ietf-tls-session-hash-01
+func extendedMasterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecret []byte, h finishedHash) []byte {
+	masterSecret := make([]byte, masterSecretLength)
+	prfForVersion(version, suite)(masterSecret, preMasterSecret, extendedMasterSecretLabel, h.Sum())
 	return masterSecret
 }
 
@@ -155,13 +172,16 @@ func masterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecr
 // secret, given the lengths of the MAC key, cipher key and IV, as defined in
 // RFC 2246, section 6.3.
 func keysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
-	seed := make([]byte, 0, len(serverRandom)+len(clientRandom))
-	seed = append(seed, serverRandom...)
-	seed = append(seed, clientRandom...)
+	if suite.flags&suiteExport > 0 {
+		return exportKeysFromMasterSecret(version, suite, masterSecret, clientRandom, serverRandom, macLen, keyLen, ivLen)
+	}
+	var seed [tlsRandomLength * 2]byte
+	copy(seed[0:len(clientRandom)], serverRandom)
+	copy(seed[len(serverRandom):], clientRandom)
 
 	n := 2*macLen + 2*keyLen + 2*ivLen
 	keyMaterial := make([]byte, n)
-	prfForVersion(version, suite)(keyMaterial, masterSecret, keyExpansionLabel, seed)
+	prfForVersion(version, suite)(keyMaterial, masterSecret, keyExpansionLabel, seed[0:])
 	clientMAC = keyMaterial[:macLen]
 	keyMaterial = keyMaterial[macLen:]
 	serverMAC = keyMaterial[:macLen]
@@ -176,35 +196,116 @@ func keysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clie
 	return
 }
 
+// The crypto wars must have been the worst
+func exportKeysFromMasterSecret30(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
+	var seed [tlsRandomLength * 2]byte
+	copy(seed[0:len(clientRandom)], serverRandom)
+	copy(seed[len(serverRandom):], clientRandom)
+	n := 2*macLen + 2*keyLen
+	keyMaterial := make([]byte, n)
+	prf30(keyMaterial, masterSecret, keyExpansionLabel, seed[0:])
+	clientMAC = keyMaterial[:macLen]
+	keyMaterial = keyMaterial[macLen:]
+	serverMAC = keyMaterial[:macLen]
+	keyMaterial = keyMaterial[macLen:]
+	clientKey = keyMaterial[:keyLen]
+	keyMaterial = keyMaterial[keyLen:]
+	serverKey = keyMaterial[:keyLen]
+	var exportSeed [tlsRandomLength * 2]byte
+	copy(exportSeed[0:len(serverRandom)], clientRandom)
+	copy(exportSeed[len(clientRandom):], serverRandom)
+	expandedKeyLen := suite.expandedKeyLen
+	finalKeyBlock := make([]byte, 2*expandedKeyLen)
+	exportPRF30(finalKeyBlock[:expandedKeyLen], clientKey, clientFinalKeyLabel, exportSeed[0:])
+	clientKey = finalKeyBlock[:expandedKeyLen]
+	finalKeyBlock = finalKeyBlock[expandedKeyLen:]
+	exportPRF30(finalKeyBlock[:expandedKeyLen], serverKey, serverFinalKeyLabel, seed[0:])
+	serverKey = finalKeyBlock[:expandedKeyLen]
+	ivBlock := make([]byte, 2*ivLen)
+	clientIV = ivBlock[:ivLen]
+	exportPRF30(clientIV, []byte{}, finalIVLabel, exportSeed[0:])
+	ivBlock = ivBlock[ivLen:]
+	serverIV = ivBlock[:ivLen]
+	exportPRF30(serverIV, []byte{}, finalIVLabel, seed[0:])
+	return
+}
+
+// If a cryptographer kills me in the night, let it be known I was sorry
+func exportKeysFromMasterSecretTLS(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
+	var seed [tlsRandomLength * 2]byte
+	copy(seed[0:len(clientRandom)], serverRandom)
+	copy(seed[len(serverRandom):], clientRandom)
+	n := 2*macLen + 2*keyLen
+	keyMaterial := make([]byte, n)
+	prf := prfForVersion(version, suite)
+	prf(keyMaterial, masterSecret, keyExpansionLabel, seed[0:])
+	clientMAC = keyMaterial[:macLen]
+	keyMaterial = keyMaterial[macLen:]
+	serverMAC = keyMaterial[:macLen]
+	keyMaterial = keyMaterial[macLen:]
+	clientKey = keyMaterial[:keyLen]
+	keyMaterial = keyMaterial[keyLen:]
+	serverKey = keyMaterial[:keyLen]
+	expandedKeyLen := suite.expandedKeyLen
+	finalKeyBlock := make([]byte, 2*expandedKeyLen)
+	var exportSeed [tlsRandomLength * 2]byte
+	copy(exportSeed[0:len(serverRandom)], clientRandom)
+	copy(exportSeed[len(clientRandom):], serverRandom)
+	prf(finalKeyBlock[:expandedKeyLen], clientKey, clientFinalKeyLabel, exportSeed[0:])
+	clientKey = finalKeyBlock[:expandedKeyLen]
+	finalKeyBlock = finalKeyBlock[expandedKeyLen:]
+	prf(finalKeyBlock[:expandedKeyLen], serverKey, serverFinalKeyLabel, exportSeed[0:])
+	serverKey = finalKeyBlock[:expandedKeyLen]
+	ivBlock := make([]byte, 2*ivLen)
+	prf(ivBlock, []byte{}, finalIVLabel, exportSeed[0:])
+	clientIV = ivBlock[:ivLen]
+	ivBlock = ivBlock[ivLen:]
+	serverIV = ivBlock[:ivLen]
+	return
+}
+
+func exportKeysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
+	switch version {
+	case VersionSSL30:
+		return exportKeysFromMasterSecret30(version, suite, masterSecret, clientRandom, serverRandom, macLen, keyLen, ivLen)
+	case VersionTLS10, VersionTLS11, VersionTLS12:
+		return exportKeysFromMasterSecretTLS(version, suite, masterSecret, clientRandom, serverRandom, macLen, keyLen, ivLen)
+	default:
+		panic("unknown version")
+	}
+}
+
 // lookupTLSHash looks up the corresponding crypto.Hash for a given
-// hash from a TLS SignatureScheme.
-func lookupTLSHash(signatureAlgorithm SignatureScheme) (crypto.Hash, error) {
-	switch signatureAlgorithm {
-	case PKCS1WithSHA1, ECDSAWithSHA1:
+// TLS hash identifier.
+func lookupTLSHash(hash uint8) (crypto.Hash, error) {
+	switch hash {
+	case hashMD5:
+		return crypto.MD5, nil
+	case hashSHA1:
 		return crypto.SHA1, nil
-	case PKCS1WithSHA256, PSSWithSHA256, ECDSAWithP256AndSHA256:
+	case hashSHA224:
+		return crypto.SHA224, nil
+	case hashSHA256:
 		return crypto.SHA256, nil
-	case PKCS1WithSHA384, PSSWithSHA384, ECDSAWithP384AndSHA384:
+	case hashSHA384:
 		return crypto.SHA384, nil
-	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512:
+	case hashSHA512:
 		return crypto.SHA512, nil
 	default:
-		return 0, fmt.Errorf("tls: unsupported signature algorithm: %#04x", signatureAlgorithm)
+		return 0, errors.New("tls: unsupported hash algorithm")
 	}
 }
 
 func newFinishedHash(version uint16, cipherSuite *cipherSuite) finishedHash {
-	var buffer []byte
-	if version == VersionSSL30 || version >= VersionTLS12 {
-		buffer = []byte{}
-	}
+	if version >= VersionTLS12 {
+		newHash := sha256.New
+		if cipherSuite != nil && cipherSuite.flags&suiteSHA384 != 0 {
+			newHash = sha512.New384
+		}
 
-	prf, hash := prfAndHashForVersion(version, cipherSuite)
-	if hash != 0 {
-		return finishedHash{hash.New(), hash.New(), nil, nil, buffer, version, prf}
+		return finishedHash{newHash(), newHash(), nil, nil, []byte{}, version, prf12(newHash)}
 	}
-
-	return finishedHash{sha1.New(), sha1.New(), md5.New(), md5.New(), buffer, version, prf}
+	return finishedHash{sha1.New(), sha1.New(), md5.New(), md5.New(), []byte{}, version, prf10}
 }
 
 // A finishedHash calculates the hash of a set of handshake messages suitable
@@ -217,7 +318,8 @@ type finishedHash struct {
 	clientMD5 hash.Hash
 	serverMD5 hash.Hash
 
-	// In TLS 1.2, a full buffer is sadly required.
+	// In TLS 1.2 (and SSL 3 for implementation convenience), a
+	// full buffer is required.
 	buffer []byte
 
 	version uint16
@@ -309,11 +411,16 @@ func (h finishedHash) serverSum(masterSecret []byte) []byte {
 	return out
 }
 
-// selectClientCertSignatureAlgorithm returns a SignatureScheme to sign a
+// selectClientCertSignatureAlgorithm returns a signatureAndHash to sign a
 // client's CertificateVerify with, or an error if none can be found.
-func (h finishedHash) selectClientCertSignatureAlgorithm(serverList []SignatureScheme, sigType uint8) (SignatureScheme, error) {
+func (h finishedHash) selectClientCertSignatureAlgorithm(serverList, clientList []SignatureScheme, sigType uint8) (SignatureScheme, error) {
+	if h.version < VersionTLS12 {
+		// Nothing to negotiate before TLS 1.2.
+		return SignatureScheme(sigType), nil
+	}
+
 	for _, v := range serverList {
-		if signatureFromSignatureScheme(v) == sigType && isSupportedSignatureAlgorithm(v, supportedSignatureAlgorithms) {
+		if uint8(v) == sigType && isSupportedSignatureAndHash(v, clientList) {
 			return v, nil
 		}
 	}
@@ -322,13 +429,9 @@ func (h finishedHash) selectClientCertSignatureAlgorithm(serverList []SignatureS
 
 // hashForClientCertificate returns a digest, hash function, and TLS 1.2 hash
 // id suitable for signing by a TLS client certificate.
-func (h finishedHash) hashForClientCertificate(sigType uint8, signatureAlgorithm SignatureScheme, masterSecret []byte) ([]byte, crypto.Hash, error) {
-	if (h.version == VersionSSL30 || h.version >= VersionTLS12) && h.buffer == nil {
-		panic("a handshake hash for a client-certificate was requested after discarding the handshake buffer")
-	}
-
+func (h finishedHash) hashForClientCertificate(signatureAndHash SignatureScheme, masterSecret []byte) ([]byte, crypto.Hash, error) {
 	if h.version == VersionSSL30 {
-		if sigType != signatureRSA {
+		if uint8(signatureAndHash) != signatureRSA {
 			return nil, 0, errors.New("tls: unsupported signature type for client certificate")
 		}
 
@@ -339,7 +442,7 @@ func (h finishedHash) hashForClientCertificate(sigType uint8, signatureAlgorithm
 		return finishedSum30(md5Hash, sha1Hash, masterSecret, nil), crypto.MD5SHA1, nil
 	}
 	if h.version >= VersionTLS12 {
-		hashAlg, err := lookupTLSHash(signatureAlgorithm)
+		hashAlg, err := lookupTLSHash(uint8(signatureAndHash >> 8))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -347,16 +450,9 @@ func (h finishedHash) hashForClientCertificate(sigType uint8, signatureAlgorithm
 		hash.Write(h.buffer)
 		return hash.Sum(nil), hashAlg, nil
 	}
-
-	if sigType == signatureECDSA {
+	if uint8(signatureAndHash) == signatureECDSA {
 		return h.server.Sum(nil), crypto.SHA1, nil
 	}
 
 	return h.Sum(), crypto.MD5SHA1, nil
-}
-
-// discardHandshakeBuffer is called when there is no more need to
-// buffer the entirety of the handshake messages.
-func (h *finishedHash) discardHandshakeBuffer() {
-	h.buffer = nil
 }

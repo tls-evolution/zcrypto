@@ -614,13 +614,13 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 
 		// SignatureAndHashAlgorithm was introduced in TLS 1.2.
 		if certVerify.hasSignatureAndHash {
-			certVerify.signatureAlgorithm, err = hs.finishedHash.selectClientCertSignatureAlgorithm(certReq.supportedSignatureAlgorithms, signatureType)
+			certVerify.signatureAlgorithm, err = hs.finishedHash.selectClientCertSignatureAlgorithm(certReq.supportedSignatureAlgorithms, c.config.signatureAndHashesForClient(), signatureType)
 			if err != nil {
 				c.sendAlert(alertInternalError)
 				return err
 			}
 		}
-		digest, hashFunc, err := hs.finishedHash.hashForClientCertificate(signatureType, certVerify.signatureAlgorithm, hs.masterSecret)
+		digest, hashFunc, err := hs.finishedHash.hashForClientCertificate(certVerify.signatureAlgorithm, hs.masterSecret)
 		if err != nil {
 			c.sendAlert(alertInternalError)
 			return err
@@ -996,4 +996,10 @@ func hostnameInSNI(name string) string {
 		name = name[:len(name)-1]
 	}
 	return name
+}
+
+// discardHandshakeBuffer is called when there is no more need to
+// buffer the entirety of the handshake messages.
+func (h *finishedHash) discardHandshakeBuffer() {
+	h.buffer = nil
 }

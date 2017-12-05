@@ -647,7 +647,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 				break
 			}
 			var digest []byte
-			if digest, _, err = hs.finishedHash.hashForClientCertificate(sigType, signatureAlgorithm, hs.masterSecret); err != nil {
+			if digest, _, err = hs.finishedHash.hashForClientCertificate(signatureAlgorithm, hs.masterSecret); err != nil {
 				break
 			}
 			if !ecdsa.Verify(key, digest, ecdsaSig.R, ecdsaSig.S) {
@@ -660,7 +660,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			}
 			var digest []byte
 			var hashFunc crypto.Hash
-			if digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(sigType, signatureAlgorithm, hs.masterSecret); err != nil {
+			if digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(signatureAlgorithm, hs.masterSecret); err != nil {
 				break
 			}
 			if sigType == signatureRSAPSS {
