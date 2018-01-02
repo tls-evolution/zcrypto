@@ -386,6 +386,10 @@ func init() {
 	cipherSuiteNames[0xFF03] = "SSL_EN_RC2_128_CBC_WITH_MD5"
 	cipherSuiteNames[0xFF85] = "OP_PCL_TLS10_AES_128_CBC_SHA512"
 
+	cipherSuiteNames[0x1301] = "TLS_AES_128_GCM_SHA256"
+	cipherSuiteNames[0x1302] = "TLS_AES_256_GCM_SHA384"
+	cipherSuiteNames[0x1303] = "TLS_CHACHA20_POLY1305_SHA256"
+
 	// https://www.iana.org/assignments/comp-meth-ids/comp-meth-ids.xhtml#comp-meth-ids-2
 	compressionNames = make(map[uint8]string)
 	compressionNames[0] = "NULL"

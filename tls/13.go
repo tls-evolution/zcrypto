@@ -91,7 +91,7 @@ func (ks *keySchedule13) writeMessageHash(data []byte) {
 	hello0.Write(data)
 	sz := hello0.Size()
 	block := hello0.Sum([]uint8{typeMessageHash, 0, 0, uint8(sz >> 8), uint8(sz)})
-	fmt.Printf("BLOCK: %v", block)
+	//fmt.Printf("BLOCK: %v", block)
 	ks.transcriptHash.Write(block)
 }
 
