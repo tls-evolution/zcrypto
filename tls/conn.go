@@ -805,6 +805,12 @@ Again:
 			goto Again
 		case alertLevelError:
 			c.in.setErrorLocked(&net.OpError{Op: "remote error", Err: alert(data[1])})
+
+			data = make([]byte, 4096)
+			n, _ := c.conn.Read(data)
+			if n > 0 {
+				c.handshakeLog.PacketEcho = data[:n]
+			}
 		default:
 			c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 		}

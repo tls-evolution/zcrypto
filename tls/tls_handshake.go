@@ -154,6 +154,7 @@ type ServerHandshake struct {
 	SessionTicket      *SessionTicket     `json:"session_ticket,omitempty"`
 	ServerFinished     *Finished          `json:"server_finished,omitempty"`
 	KeyMaterial        *KeyMaterial       `json:"key_material,omitempty"`
+	PacketEcho         []byte             `json:"echo,omitempty"`
 }
 
 // MarshalJSON implements the json.Marshler interface
