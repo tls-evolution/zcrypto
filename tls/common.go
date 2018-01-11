@@ -992,6 +992,14 @@ func (c *Config) getSupportedVersions() []uint16 {
 	}
 	// TODO: remove once TLS 1.3 is finalised.
 	if maxVersion == VersionTLS13 {
+		dv := c.maxVersion()
+		if (dv >> 8) == 0x7F {
+			draft := dv & 0xFF
+			if draft > 22 {
+				draft = 22
+			}
+			return tls13DraftSuppVersArray[22-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
+		}
 		return tls13DraftSuppVersArray[:len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
 	}
 	return configSuppVersArray[VersionTLS13-maxVersion : VersionTLS13-minVersion+1]
