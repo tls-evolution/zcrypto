@@ -197,6 +197,15 @@ func (c *Conn) clientHandshake() error {
 			return err
 		}
 		hello.keyShares = []keyShare{clientKS}
+
+		// Middlebox Compatibility Mode
+		if c.config.maxVersion() >= VersionTLS13Draft22 {
+			hello.sessionId = make([]byte, 32)
+			if _, err = c.config.rand().Read(hello.sessionId); err != nil {
+				c.sendAlert(alertInternalError)
+				return err
+			}
+		}
 	}
 
 	hs := &clientHandshakeState{

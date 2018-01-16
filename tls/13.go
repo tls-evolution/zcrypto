@@ -845,6 +845,14 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	serverHello := hs.serverHello
 	// TODO check if keyshare is unacceptable, raise HRR.
 
+	// Draft22: Middlebox Compatibility Mode
+	if c.config.maxVersion() >= VersionTLS13Draft22 {
+		if bytes.Compare(hs.hello.sessionId, serverHello.sessionId) != 0 {
+			c.sendAlert(alertIllegalParameter)
+			return errors.New("middlebox compatibility mode violation")
+		}
+	}
+
 	clientKS := hs.hello.keyShares[0]
 	if serverHello.keyShare.group != clientKS.group {
 		c.sendAlert(alertIllegalParameter)
@@ -937,6 +945,11 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		return errors.New("tls: server's Finished message is incorrect")
 	}
 	hs.keySchedule.write(serverFinished.marshal())
+
+	// Send ChangeCipherSpec (middlebox compatibility).
+	if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
+		return err
+	}
 
 	// Server has authenticated itself, change our cipher.
 	c.out.setCipher(c.vers, clientCipher)
