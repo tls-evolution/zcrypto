@@ -719,6 +719,15 @@ Again:
 
 	// Process message.
 	b, c.rawInput = c.in.splitBlock(b, recordHeaderLen+n)
+
+	// TLS 1.3 middlebox compatibility: skip over unencrypted CCS.
+	if c.vers >= VersionTLS13 && typ == recordTypeChangeCipherSpec &&
+		want == recordTypeHandshake &&
+		(c.phase == handshakeRunning || c.phase == readingClientFinished) {
+		// TODO check contents
+		return nil
+	}
+
 	peekedAlert := peekAlert(b) // peek at a possible alert before decryption
 	ok, off, alertValue := c.in.decrypt(b)
 	switch {
