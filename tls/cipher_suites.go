@@ -108,7 +108,7 @@ type cipherSuite struct {
 
 var implementedCipherSuites = []*cipherSuite{
 	// TLS 1.3 ciphersuites specify only the AEAD and the HKDF hash.
-	// {TLS_CHACHA20_POLY1305_SHA256, 32, 0, 12, nil, suiteTLS13, nil, nil, aeadChaCha20Poly1305},
+	{TLS_CHACHA20_POLY1305_SHA256, 32, 0, 12, 32, nil, suiteTLS13, nil, nil, aeadCHACHA20POLY1305},
 	{TLS_AES_128_GCM_SHA256, 16, 0, 4, 32, nil, suiteTLS13, nil, nil, aeadAESGCM13},
 	{TLS_AES_256_GCM_SHA384, 32, 0, 4, 32, nil, suiteTLS13 | suiteSHA384, nil, nil, aeadAESGCM13},
 
@@ -898,6 +898,8 @@ const (
 	TLS_AES_128_GCM_SHA256       uint16 = 0x1301
 	TLS_AES_256_GCM_SHA384       uint16 = 0x1302
 	TLS_CHACHA20_POLY1305_SHA256 uint16 = 0x1303
+	TLS_AES_128_CCM_SHA256       uint16 = 0x1304
+	TLS_AES_128_CCM_8_SHA256     uint16 = 0x1305
 )
 
 // RSA Ciphers

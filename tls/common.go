@@ -129,6 +129,12 @@ const (
 	CurveP384 CurveID = 24
 	CurveP521 CurveID = 25
 	X25519    CurveID = 29
+	X448      CurveID = 30
+	FFDHE2048 CurveID = 256
+	FFDHE3072 CurveID = 257
+	FFDHE4096 CurveID = 258
+	FFDHE6144 CurveID = 259
+	FFDHE8192 CurveID = 260
 )
 
 func (curveID *CurveID) MarshalJSON() ([]byte, error) {
@@ -897,12 +903,14 @@ func (c *Config) cipherSuites() []uint16 {
 	} else if c.maxVersion() >= VersionTLS13 {
 		// Ensure that TLS 1.3 suites are always present, but respect
 		// the application cipher suite preferences.
-		s13 := defaultTLS13CipherSuites()
-		if !hasOverlappingCipherSuites(s, s13) {
-			allSuites := make([]uint16, len(s13)+len(s))
-			allSuites = append(allSuites, s13...)
-			s = append(allSuites, s...)
-		}
+		/*
+			s13 := defaultTLS13CipherSuites()
+			if !hasOverlappingCipherSuites(s, s13) {
+				allSuites := make([]uint16, len(s13)+len(s))
+				allSuites = append(allSuites, s13...)
+				s = append(allSuites, s...)
+			}
+		*/
 	}
 	return s
 }
