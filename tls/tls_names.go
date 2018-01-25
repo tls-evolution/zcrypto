@@ -389,6 +389,8 @@ func init() {
 	cipherSuiteNames[0x1301] = "TLS_AES_128_GCM_SHA256"
 	cipherSuiteNames[0x1302] = "TLS_AES_256_GCM_SHA384"
 	cipherSuiteNames[0x1303] = "TLS_CHACHA20_POLY1305_SHA256"
+	cipherSuiteNames[0x1304] = "TLS_AES_128_CCM_SHA256"
+	cipherSuiteNames[0x1305] = "TLS_AES_128_CCM_8_SHA256"
 
 	// https://www.iana.org/assignments/comp-meth-ids/comp-meth-ids.xhtml#comp-meth-ids-2
 	compressionNames = make(map[uint8]string)
