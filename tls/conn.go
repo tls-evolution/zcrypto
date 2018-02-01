@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	//"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -904,7 +904,6 @@ func peekAlert(b *block) error {
 // sendAlert sends a TLS alert message.
 // c.out.Mutex <= L.
 func (c *Conn) sendAlertLocked(err alert) error {
-	log.Println("Sending alert! ", err)
 	switch err {
 	case alertNoRenegotiation, alertCloseNotify:
 		c.tmp[0] = alertLevelWarning

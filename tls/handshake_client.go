@@ -408,7 +408,7 @@ func (hs *clientHandshakeState) pickCipherSuite(suite uint16) error {
 	if hs.c.vers >= VersionTLS13 && hs.suite.flags&suiteTLS13 == 0 ||
 		hs.c.vers < VersionTLS13 && hs.suite.flags&suiteTLS13 != 0 {
 		hs.c.sendAlert(alertHandshakeFailure)
-		fmt.Printf("Server (ver %d) chose: %04x\n", hs.c.vers, hs.suite.id)
+		//fmt.Printf("Server (ver %d) chose: %04x\n", hs.c.vers, hs.suite.id)
 		return errors.New("tls: server chose an inappropriate cipher suite")
 	}
 

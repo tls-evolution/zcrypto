@@ -412,7 +412,7 @@ func (test *serverTest) run(t *testing.T, write bool) {
 			t.Fatalf("Handshake failed")
 		}
 		recordingConn.WriteTo(out)
-		fmt.Printf("Wrote %s\n", path)
+		//fmt.Printf("Wrote %s\n", path)
 		childProcess.Wait()
 	}
 }
