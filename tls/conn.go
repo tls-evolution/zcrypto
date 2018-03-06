@@ -874,7 +874,15 @@ Again:
 				if unmarshalAlert := m.unmarshal(data); unmarshalAlert != alertSuccess {
 					return c.in.setErrorLocked(c.sendAlert(unmarshalAlert))
 				}
-				//fmt.Printf("WARN: session ticket not implemented yet")
+				// update SessionTicket information
+				c.handshakeLog.SessionTicket = &SessionTicket{
+					Length:             len(m.ticket),
+					Value:              m.ticket,
+					LifetimeHint:       m.lifetime,
+					Nonce:              m.nonce,
+					MaxEarlyDataLength: m.maxEarlyDataLength,
+					AgeAdd:             m.ageAdd,
+				}
 				goto Again
 			}
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))

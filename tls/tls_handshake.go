@@ -123,6 +123,10 @@ type SessionTicket struct {
 	Value        []uint8 `json:"value,omitempty"`
 	Length       int     `json:"length,omitempty"`
 	LifetimeHint uint32  `json:"lifetime_hint,omitempty"`
+	// TLS 1.3 fields
+	Nonce              []uint8 `json:"nonce,omitempty"`
+	MaxEarlyDataLength uint32  `json:"max_early_data,omitempty"`
+	AgeAdd             uint32  `json:"age_add,omitempty"`
 }
 
 type MasterSecret struct {
