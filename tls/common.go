@@ -36,6 +36,7 @@ const (
 	VersionTLS13Draft20 = 0x7f00 | 20
 	VersionTLS13Draft21 = 0x7f00 | 21
 	VersionTLS13Draft22 = 0x7f00 | 22
+	VersionTLS13Draft23 = 0x7f00 | 23
 )
 
 const (
@@ -95,7 +96,8 @@ const (
 	extensionSCT                  uint16 = 18 // https://tools.ietf.org/html/rfc6962#section-6
 	extensionExtendedMasterSecret uint16 = 23
 	extensionSessionTicket        uint16 = 35
-	extensionKeyShare             uint16 = 40
+	extensionKeySharePre23        uint16 = 40
+	extensionKeyShare23           uint16 = 51
 	extensionPreSharedKey         uint16 = 41
 	extensionEarlyData            uint16 = 42
 	extensionSupportedVersions    uint16 = 43
@@ -985,6 +987,7 @@ var configSuppVersArray = [...]uint16{VersionTLS13, VersionTLS12, VersionTLS11, 
 //
 // TODO: remove once TLS 1.3 is finalised.
 var tls13DraftSuppVersArray = [...]uint16{
+	VersionTLS13Draft23,
 	VersionTLS13Draft22, VersionTLS13Draft21, VersionTLS13Draft20, VersionTLS13Draft19,
 	VersionTLS13Draft18, VersionTLS12, VersionTLS11, VersionTLS10, VersionSSL30}
 
@@ -1008,10 +1011,10 @@ func (c *Config) getSupportedVersions() []uint16 {
 		dv := c.maxVersion()
 		if (dv >> 8) == 0x7F {
 			draft := dv & 0xFF
-			if draft > 22 {
-				draft = 22
+			if draft > 23 {
+				draft = 23
 			}
-			return tls13DraftSuppVersArray[22-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
+			return tls13DraftSuppVersArray[23-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
 		}
 		return tls13DraftSuppVersArray[:len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
 	}

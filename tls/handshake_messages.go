@@ -81,6 +81,21 @@ func (m *clientHelloMsg) marshal() []byte {
 		return m.raw
 	}
 
+	has23 := false
+	hasPre23 := false
+	if len(m.supportedVersions) > 0 {
+		for _, v := range m.supportedVersions {
+			if v >= VersionTLS13Draft23 {
+				has23 = true
+			} else if v >= VersionTLS13Draft18 {
+				hasPre23 = true
+			}
+		}
+		if !(has23 || hasPre23) {
+			has23 = true // if only TLS1.3 is supplied, assume latest draft
+		}
+	}
+
 	length := 2 + 32 + 1 + len(m.sessionId) + 2 + len(m.cipherSuites)*2 + 1 + len(m.compressionMethods)
 	numExtensions := 0
 	extensionsLength := 0
@@ -143,13 +158,21 @@ func (m *clientHelloMsg) marshal() []byte {
 			extensionsLength += len(ext)
 		}
 	}
-	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
+	addExtensionFun := func() {
 		extensionsLength += 2
 		for _, k := range m.keyShares {
 			extensionsLength += 4 + len(k.data)
 		}
 		numExtensions++
 	}
+
+	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
+		addExtensionFun()
+		if has23 && hasPre23 {
+			addExtensionFun() // add extension twice
+		}
+	}
+
 	if len(m.supportedVersions) > 0 {
 		extensionsLength += 1 + 2*len(m.supportedVersions)
 		numExtensions++
@@ -378,7 +401,7 @@ func (m *clientHelloMsg) marshal() []byte {
 			z = z[len(ext):]
 		}
 	}
-	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
+	addKeyshareFun := func(extensionKeyShare uint16) {
 		// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.5
 		z[0] = byte(extensionKeyShare >> 8)
 		z[1] = byte(extensionKeyShare)
@@ -402,6 +425,15 @@ func (m *clientHelloMsg) marshal() []byte {
 		lengths[0] = byte(totalLength >> 8)
 		lengths[1] = byte(totalLength)
 	}
+	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
+		if hasPre23 {
+			addKeyshareFun(extensionKeySharePre23)
+		}
+		if has23 {
+			addKeyshareFun(extensionKeyShare23)
+		}
+	}
+
 	if len(m.supportedVersions) > 0 {
 		z[0] = byte(extensionSupportedVersions >> 8)
 		z[1] = byte(extensionSupportedVersions)
@@ -661,7 +693,7 @@ func (m *clientHelloMsg) unmarshal(data []byte) alert {
 			if length != 0 {
 				return alertDecodeError
 			}
-		case extensionKeyShare:
+		case extensionKeyShare23, extensionKeySharePre23:
 			// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.5
 			if length < 2 {
 				return alertDecodeError
@@ -1045,8 +1077,8 @@ func (m *serverHelloMsg) marshal() []byte {
 		}
 	}
 	if m.keyShare.group != 0 {
-		z[0] = uint8(extensionKeyShare >> 8)
-		z[1] = uint8(extensionKeyShare)
+		z[0] = uint8(extensionKeySharePre23 >> 8)
+		z[1] = uint8(extensionKeySharePre23)
 		l := 4 + len(m.keyShare.data)
 		z[2] = uint8(l >> 8)
 		z[3] = uint8(l)
@@ -1247,7 +1279,7 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 				m.scts = append(m.scts, d[:sctLen])
 				d = d[sctLen:]
 			}
-		case extensionKeyShare:
+		case extensionKeySharePre23, extensionKeyShare23:
 			d := data[:length]
 
 			if m.isHelloRetryRequest {
@@ -1503,7 +1535,7 @@ func (m *helloRetryRequestMsg) unmarshal(data []byte) alert {
 			return alertDecodeError
 		case extensionCookie:
 			copy(m.cookie, data[0:length-1]) // copy includes length prefix
-		case extensionKeyShare:
+		case extensionKeySharePre23, extensionKeyShare23:
 			//  draft-ietf-tls-tls13.html#key-share contains only group for hello_retry
 			if length != 2 {
 				return alertDecodeError
