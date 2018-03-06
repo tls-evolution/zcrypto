@@ -209,10 +209,10 @@ func (c *Conn) clientHandshake() error {
 	}
 
 	hs := &clientHandshakeState{
-		c:          c,
-		hello:      hello,
-		session:    session,
-		privateKey: privateKey,
+		c:           c,
+		hello:       hello,
+		session:     session,
+		privateKeys: privateKeys,
 	}
 
 	if err = hs.handshake(); err != nil {
@@ -243,7 +243,7 @@ func (hs *clientHandshakeState) handshake() error {
 	c.handshakeLog = new(ServerHandshake)
 	c.heartbleedLog = new(Heartbleed)
 
-	var hrrMsg *helloRetryRequestMsg
+	var hrrMsg []byte
 	var hello1 []uint8
 
 	// send ClientHello
@@ -258,6 +258,22 @@ retry:
 		return err
 	}
 
+	// generate new stuff here
+	regenerateKeyshare := func(group CurveID, hrr []byte) error {
+		privateKey, clientKS, err := c.config.generateKeyShare(group)
+		if err != nil {
+			c.sendAlert(alertInternalError)
+			return err
+		}
+
+		hs.privateKeys = map[CurveID][]byte{group: privateKey}
+		hs.hello.keyShares = []keyShare{clientKS}
+		hello1 = hs.hello.marshal()
+		hs.hello.raw = nil // prevent using outdated, cached copy
+		hrrMsg = hrr
+		return nil
+	}
+
 	var vers, cipherSuite uint16
 	switch m := msg.(type) {
 	case *serverHelloMsg:
@@ -265,29 +281,32 @@ retry:
 		c.handshakeLog.ServerHello = m.MakeLog()
 		vers = m.vers
 		cipherSuite = m.cipherSuite
+
+		if err = hs.pickTLSVersion(vers); err != nil {
+			return err
+		}
+		if err = hs.pickCipherSuite(cipherSuite); err != nil {
+			return err
+		}
+
+		// Draft22+: This may be a HRR message
+		if (vers >= VersionTLS13Draft22) && m.isHelloRetryRequest {
+			// copy cookie
+			if m.cookie != nil {
+				copy(hs.hello.cookie, m.cookie)
+			}
+			regenerateKeyshare(m.keyShare.group, m.marshal())
+			goto retry
+		}
 	case *helloRetryRequestMsg:
 		if m.cookie != nil {
 			copy(hs.hello.cookie, m.cookie)
 		}
-		// generate new stuff here
-		privateKey, clientKS, err := c.config.generateKeyShare(m.keyShare.group)
-		if err != nil {
-			c.sendAlert(alertInternalError)
-			return err
-		}
-		hs.privateKey = privateKey
-		hs.hello.keyShares = []keyShare{clientKS}
-		hello1 = hs.hello.marshal()
-		hs.hello.raw = nil // prevent using outdated, cached copy
-		hrrMsg = m
+		regenerateKeyshare(m.keyShare.group, m.marshal())
 		goto retry
 	default:
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(hs.serverHello, msg)
-	}
-
-	if err = hs.pickTLSVersion(vers); err != nil {
-		return err
 	}
 
 	if err = hs.pickCipherSuite(cipherSuite); err != nil {
@@ -299,10 +318,10 @@ retry:
 		if hrrMsg != nil {
 			if c.vers >= VersionTLS13Draft19 {
 				hs.keySchedule.writeMessageHash(hello1)
-				hs.keySchedule.write(hrrMsg.marshal())
+				hs.keySchedule.write(hrrMsg)
 			} else {
 				hs.keySchedule.write(hello1)
-				hs.keySchedule.write(hrrMsg.marshal())
+				hs.keySchedule.write(hrrMsg)
 			}
 		}
 		hs.keySchedule.write(hs.hello.marshal())

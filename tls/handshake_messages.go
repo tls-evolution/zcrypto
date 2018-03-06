@@ -143,7 +143,7 @@ func (m *clientHelloMsg) marshal() []byte {
 			extensionsLength += len(ext)
 		}
 	}
-	if len(m.keyShares) > 0 {
+	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
 		extensionsLength += 2
 		for _, k := range m.keyShares {
 			extensionsLength += 4 + len(k.data)
@@ -378,7 +378,7 @@ func (m *clientHelloMsg) marshal() []byte {
 			z = z[len(ext):]
 		}
 	}
-	if len(m.keyShares) > 0 {
+	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
 		// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.5
 		z[0] = byte(extensionKeyShare >> 8)
 		z[1] = byte(extensionKeyShare)
@@ -801,6 +801,8 @@ type serverHelloMsg struct {
 	extendedMasterSecret         bool
 	alpnProtocol                 string
 	unknownExtensions            [][]byte
+	isHelloRetryRequest          bool
+	cookie                       []byte
 
 	// TLS 1.3
 	keyShare    keyShare
@@ -835,9 +837,11 @@ func (m *serverHelloMsg) equal(i interface{}) bool {
 		m.ticketSupported == m1.ticketSupported &&
 		m.secureRenegotiationSupported == m1.secureRenegotiationSupported &&
 		bytes.Equal(m.secureRenegotiation, m1.secureRenegotiation) &&
+		bytes.Equal(m.cookie, m1.cookie) &&
 		m.extendedMasterSecret == m1.extendedMasterSecret &&
 		m.alpnProtocol == m1.alpnProtocol &&
 		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions) &&
+		m.isHelloRetryRequest == m1.isHelloRetryRequest &&
 		m.keyShare.group == m1.keyShare.group &&
 		bytes.Equal(m.keyShare.data, m1.keyShare.data) &&
 		m.psk == m1.psk &&
@@ -1069,6 +1073,13 @@ func (m *serverHelloMsg) marshal() []byte {
 	return x
 }
 
+var HELLO_RETRY_MAGIC = [32]byte{
+	0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11,
+	0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65, 0xb8, 0x91,
+	0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e,
+	0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
+}
+
 func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	if len(data) < 42 {
 		return alertDecodeError
@@ -1076,6 +1087,8 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 	m.raw = data
 	m.vers = uint16(data[4])<<8 | uint16(data[5])
 	m.random = data[6:38]
+
+	m.isHelloRetryRequest = bytes.Equal(m.random, HELLO_RETRY_MAGIC[:])
 
 	if m.vers >= VersionTLS13 && m.vers <= VersionTLS13Draft21 {
 		// draft 18-21 backward compatibility
@@ -1237,22 +1250,32 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 		case extensionKeyShare:
 			d := data[:length]
 
-			if len(d) < 4 {
-				return alertDecodeError
+			if m.isHelloRetryRequest {
+				if len(d) < 2 {
+					return alertDecodeError
+				}
+				m.keyShare.group = CurveID(d[0])<<8 | CurveID(d[1])
+			} else {
+				if len(d) < 4 {
+					return alertDecodeError
+				}
+				m.keyShare.group = CurveID(d[0])<<8 | CurveID(d[1])
+				l := int(d[2])<<8 | int(d[3])
+				d = d[4:]
+				if len(d) != l {
+					return alertDecodeError
+				}
+				m.keyShare.data = d[:l]
+
 			}
-			m.keyShare.group = CurveID(d[0])<<8 | CurveID(d[1])
-			l := int(d[2])<<8 | int(d[3])
-			d = d[4:]
-			if len(d) != l {
-				return alertDecodeError
-			}
-			m.keyShare.data = d[:l]
 		case extensionPreSharedKey:
 			if length != 2 {
 				return alertDecodeError
 			}
 			m.psk = true
 			m.pskIdentity = uint16(data[0])<<8 | uint16(data[1])
+		case extensionCookie:
+			copy(m.cookie, data[0:length-1]) // copy includes length prefix
 		default:
 			fullExt := append(fullData[:4], data[:length]...)
 			m.unknownExtensions = append(m.unknownExtensions, fullExt)
