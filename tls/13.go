@@ -903,15 +903,22 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		}
 	}
 
-	clientKS := hs.hello.keyShares[0]
-	if serverHello.keyShare.group != clientKS.group {
+	/*
+		clientKS := hs.hello.keyShares[0]
+		if serverHello.keyShare.group != clientKS.group {
+			c.sendAlert(alertIllegalParameter)
+			return errors.New("bad or missing key share from server")
+		}*/
+
+	privKey, ok := hs.privateKeys[serverHello.keyShare.group]
+	if !ok {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("bad or missing key share from server")
 	}
 
 	// 0-RTT is not supported yet, so use an empty PSK.
 	hs.keySchedule.setSecret(nil)
-	ecdheSecret := deriveECDHESecret(serverHello.keyShare, hs.privateKey)
+	ecdheSecret := deriveECDHESecret(serverHello.keyShare, privKey)
 	if ecdheSecret == nil {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("tls: bad ECDHE server share")

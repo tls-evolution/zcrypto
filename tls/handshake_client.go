@@ -35,7 +35,7 @@ type clientHandshakeState struct {
 
 	// TLS 1.3 fields
 	keySchedule *keySchedule13
-	privateKey  []byte
+	privateKeys map[CurveID][]byte
 }
 
 func makeClientHello(config *Config) (*clientHelloMsg, error) {
@@ -181,22 +181,33 @@ func (c *Conn) clientHandshake() error {
 		}
 	}
 
-	var privateKey []byte
+	privateKeys := make(map[CurveID][]byte)
 	var clientKS keyShare
 	if c.config.maxVersion() >= VersionTLS13 {
 		// Version preference is indicated via "supported_extensions",
 		// set legacy_version to TLS 1.2 for backwards compatibility.
 		hello.vers = VersionTLS12
 		hello.supportedVersions = c.config.getSupportedVersions()
-		// Create one keyshare for the first default curve. If it is not
-		// appropriate, the server should raise a HRR.
-		defaultGroup := c.config.curvePreferences()[0]
-		privateKey, clientKS, err = c.config.generateKeyShare(defaultGroup)
-		if err != nil {
-			c.sendAlert(alertInternalError)
-			return err
+		if c.config.KeysharesFor == nil {
+			// Create one keyshare for the first default curve. If it is not
+			// appropriate, the server should raise a HRR.
+			defaultGroup := c.config.curvePreferences()[0]
+			privateKeys[defaultGroup], clientKS, err = c.config.generateKeyShare(defaultGroup)
+			if err != nil {
+				c.sendAlert(alertInternalError)
+				return err
+			}
+			hello.keyShares = []keyShare{clientKS}
+		} else {
+			for _, ks := range *c.config.KeysharesFor {
+				privateKeys[ks], clientKS, err = c.config.generateKeyShare(ks)
+				hello.keyShares = append(hello.keyShares, clientKS)
+			}
+			if err != nil {
+				c.sendAlert(alertInternalError)
+				return err
+			}
 		}
-		hello.keyShares = []keyShare{clientKS}
 
 		// Middlebox Compatibility Mode
 		if c.config.maxVersion() >= VersionTLS13Draft22 {

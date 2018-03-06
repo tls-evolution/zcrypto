@@ -654,6 +654,10 @@ type Config struct {
 	// be used.
 	CurvePreferences []CurveID
 
+	// KeysharesFor contains the elliptic curves that keyshares will be created for.
+	// If nil, only a keyshare for the first curve will be generated.
+	KeysharesFor *[]CurveID
+
 	// DynamicRecordSizingDisabled disables adaptive sizing of TLS records.
 	// When true, the largest possible TLS record size is always used. When
 	// false, the size of TLS records may be adjusted in an attempt to
@@ -796,6 +800,7 @@ func (c *Config) Clone() *Config {
 		MinVersion:                  c.MinVersion,
 		MaxVersion:                  c.MaxVersion,
 		CurvePreferences:            c.CurvePreferences,
+		KeysharesFor:                c.KeysharesFor,
 		DynamicRecordSizingDisabled: c.DynamicRecordSizingDisabled,
 		Renegotiation:               c.Renegotiation,
 		KeyLogWriter:                c.KeyLogWriter,
