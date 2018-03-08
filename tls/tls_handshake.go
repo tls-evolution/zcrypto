@@ -44,6 +44,7 @@ type ClientHello struct {
 	SignatureAndHashes   []SignatureScheme   `json:"signature_and_hashes,omitempty"`
 	SctEnabled           bool                `json:"sct_enabled"`
 	AlpnProtocols        []string            `json:"alpn_protocols,omitempty"`
+	SupportedVersions    []uint16            `json:"supported_versions,omitempty"`
 	UnknownExtensions    [][]byte            `json:"unknown_extensions,omitempty"`
 }
 
@@ -333,6 +334,8 @@ func (m *clientHelloMsg) MakeLog() *ClientHello {
 
 	ch.AlpnProtocols = make([]string, len(m.alpnProtocols))
 	copy(ch.AlpnProtocols, m.alpnProtocols)
+
+	ch.SupportedVersions = m.supportedVersions
 
 	ch.UnknownExtensions = make([][]byte, len(m.unknownExtensions))
 	for i, extBytes := range m.unknownExtensions {
