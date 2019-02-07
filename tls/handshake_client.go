@@ -67,7 +67,9 @@ func makeClientHello(config *Config) (*clientHelloMsg, error) {
 		supportedPoints:              []uint8{pointFormatUncompressed},
 		nextProtoNeg:                 len(config.NextProtos) > 0,
 		secureRenegotiationSupported: true,
+		delegatedCredential:          config.AcceptDelegatedCredential,
 		alpnProtocols:                config.NextProtos,
+		extendedMasterSecret:         config.UseExtendedMasterSecret,
 	}
 	possibleCipherSuites := config.cipherSuites()
 	hello.cipherSuites = make([]uint16, 0, len(possibleCipherSuites))
@@ -101,12 +103,14 @@ NextCipherSuite:
 	if hello.vers >= VersionTLS12 {
 		hello.supportedSignatureAlgorithms = supportedSignatureAlgorithms
 	}
-	// TODO fix PSS support for certificates and advertise these algorithms
-	// in the global supportedSignatureAlgorithms.
+
 	if hello.vers >= VersionTLS13 {
-		hello.supportedSignatureAlgorithms =
-			append([]SignatureScheme{PSSWithSHA256, PSSWithSHA384},
-				hello.supportedSignatureAlgorithms...)
+		// Version preference is indicated via "supported_extensions",
+		// set legacy_version to TLS 1.2 for backwards compatibility.
+		hello.vers = VersionTLS12
+		hello.supportedVersions = config.getSupportedVersions()
+		hello.supportedSignatureAlgorithms = supportedSignatureAlgorithms13
+		hello.supportedSignatureAlgorithmsCert = supportedSigAlgorithmsCert(supportedSignatureAlgorithms13)
 	}
 
 	return hello, nil

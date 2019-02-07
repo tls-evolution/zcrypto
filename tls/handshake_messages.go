@@ -25,36 +25,37 @@ func signAlgosCertList(signAlgos, signAlgosCert []SignatureScheme) []SignatureSc
 }
 
 type clientHelloMsg struct {
-	raw                          []byte
-	rawTruncated                 []byte // for PSK binding
-	vers                         uint16
-	random                       []byte
-	sessionId                    []byte
-	cipherSuites                 []uint16
-	compressionMethods           []uint8
-	nextProtoNeg                 bool
-	serverName                   string
-	ocspStapling                 bool
-	scts                         bool
-	supportedCurves              []CurveID
-	supportedPoints              []uint8
-	ticketSupported              bool
-	sessionTicket                []uint8
-	supportedSignatureAlgorithms []SignatureScheme
-	secureRenegotiation          []byte
-	secureRenegotiationSupported bool
-	heartbeatEnabled             bool
-	heartbeatMode                uint8
-	extendedMasterSecret         bool
-	alpnProtocols                []string
-	unknownExtensions            [][]byte
-	keyShares                    []keyShare
-	supportedVersions            []uint16
-	psks                         []psk
-	pskKeyExchangeModes          []uint8
-	cookie                       []byte
-	earlyData                    bool
-	delegatedCredential          bool
+	raw                              []byte
+	rawTruncated                     []byte // for PSK binding
+	vers                             uint16
+	random                           []byte
+	sessionId                        []byte
+	cipherSuites                     []uint16
+	compressionMethods               []uint8
+	nextProtoNeg                     bool
+	serverName                       string
+	ocspStapling                     bool
+	scts                             bool
+	supportedCurves                  []CurveID
+	supportedPoints                  []uint8
+	ticketSupported                  bool
+	sessionTicket                    []uint8
+	supportedSignatureAlgorithms     []SignatureScheme
+	supportedSignatureAlgorithmsCert []SignatureScheme
+	secureRenegotiation              []byte
+	secureRenegotiationSupported     bool
+	heartbeatEnabled                 bool
+	heartbeatMode                    uint8
+	extendedMasterSecret             bool
+	alpnProtocols                    []string
+	unknownExtensions                [][]byte
+	keyShares                        []keyShare
+	supportedVersions                []uint16
+	psks                             []psk
+	pskKeyExchangeModes              []uint8
+	cookie                           []byte
+	earlyData                        bool
+	delegatedCredential              bool
 }
 
 // Function used for signature_algorithms and signature_algorithrms_cert
@@ -127,6 +128,7 @@ func (m *clientHelloMsg) equal(i interface{}) bool {
 		m.ticketSupported == m1.ticketSupported &&
 		bytes.Equal(m.sessionTicket, m1.sessionTicket) &&
 		eqSignatureAlgorithms(m.supportedSignatureAlgorithms, m1.supportedSignatureAlgorithms) &&
+		eqSignatureAlgorithms(m.supportedSignatureAlgorithmsCert, m1.supportedSignatureAlgorithmsCert) &&
 		m.secureRenegotiationSupported == m1.secureRenegotiationSupported &&
 		bytes.Equal(m.secureRenegotiation, m1.secureRenegotiation) &&
 		m.heartbeatEnabled == m1.heartbeatEnabled &&
