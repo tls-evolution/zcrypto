@@ -17,9 +17,9 @@ var signatureSchemeNames map[uint16]string
 
 func init() {
 	signatureNames = make(map[uint8]string, 8)
-	signatureNames[signatureRSA] = "rsa"
-	signatureNames[signatureDSA] = "dsa"
-	signatureNames[signatureECDSA] = "ecdsa"
+	signatureNames[signature12_RSA] = "rsa"
+	signatureNames[signature12_DSA] = "dsa"
+	signatureNames[signature12_ECDSA] = "ecdsa"
 
 	hashNames = make(map[uint8]string, 16)
 	hashNames[hashMD5] = "md5"

@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"errors"
+	"fmt"
 	"hash"
 )
 
@@ -276,23 +277,19 @@ func exportKeysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret
 }
 
 // lookupTLSHash looks up the corresponding crypto.Hash for a given
-// TLS hash identifier.
-func lookupTLSHash(hash uint8) (crypto.Hash, error) {
-	switch hash {
-	case hashMD5:
-		return crypto.MD5, nil
-	case hashSHA1:
+// hash from a TLS SignatureScheme.
+func lookupTLSHash(signatureAlgorithm SignatureScheme) (crypto.Hash, error) {
+	switch signatureAlgorithm {
+	case PKCS1WithSHA1, ECDSAWithSHA1:
 		return crypto.SHA1, nil
-	case hashSHA224:
-		return crypto.SHA224, nil
-	case hashSHA256:
+	case PKCS1WithSHA256, PSSWithSHA256, ECDSAWithP256AndSHA256:
 		return crypto.SHA256, nil
-	case hashSHA384:
+	case PKCS1WithSHA384, PSSWithSHA384, ECDSAWithP384AndSHA384:
 		return crypto.SHA384, nil
-	case hashSHA512:
+	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512:
 		return crypto.SHA512, nil
 	default:
-		return 0, errors.New("tls: unsupported hash algorithm")
+		return 0, fmt.Errorf("tls: unsupported signature algorithm: %#04x", signatureAlgorithm)
 	}
 }
 
@@ -427,32 +424,33 @@ func (h finishedHash) selectClientCertSignatureAlgorithm(serverList, clientList 
 	return 0, errors.New("tls: no supported signature algorithm found for signing client certificate")
 }
 
-// hashForClientCertificate returns a digest, hash function, and TLS 1.2 hash
-// id suitable for signing by a TLS client certificate.
-func (h finishedHash) hashForClientCertificate(signatureAndHash SignatureScheme, masterSecret []byte) ([]byte, crypto.Hash, error) {
+// hashForClientCertificate returns a digest over the handshake messages so far,
+// suitable for signing by a TLS client certificate.
+func (h finishedHash) hashForClientCertificate(sigType uint8, hashAlg crypto.Hash, masterSecret []byte) ([]byte, error) {
+	if (h.version == VersionSSL30 || h.version >= VersionTLS12) && h.buffer == nil {
+		panic("a handshake hash for a client-certificate was requested after discarding the handshake buffer")
+	}
+
 	if h.version == VersionSSL30 {
-		if uint8(signatureAndHash) != signatureRSA {
-			return nil, 0, errors.New("tls: unsupported signature type for client certificate")
+		if sigType != signature13_PKCS1v15 {
+			return nil, errors.New("tls: unsupported signature type for client certificate")
 		}
 
 		md5Hash := md5.New()
 		md5Hash.Write(h.buffer)
 		sha1Hash := sha1.New()
 		sha1Hash.Write(h.buffer)
-		return finishedSum30(md5Hash, sha1Hash, masterSecret, nil), crypto.MD5SHA1, nil
+		return finishedSum30(md5Hash, sha1Hash, masterSecret, nil), nil
 	}
 	if h.version >= VersionTLS12 {
-		hashAlg, err := lookupTLSHash(uint8(signatureAndHash >> 8))
-		if err != nil {
-			return nil, 0, err
-		}
 		hash := hashAlg.New()
 		hash.Write(h.buffer)
-		return hash.Sum(nil), hashAlg, nil
-	}
-	if uint8(signatureAndHash) == signatureECDSA {
-		return h.server.Sum(nil), crypto.SHA1, nil
+		return hash.Sum(nil), nil
 	}
 
-	return h.Sum(), crypto.MD5SHA1, nil
+	if sigType == signature13_ECDSA {
+		return h.server.Sum(nil), nil
+	}
+
+	return h.Sum(), nil
 }

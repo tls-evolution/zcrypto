@@ -192,7 +192,7 @@ func (c *Conn) clientHandshake() error {
 			// Create one keyshare for the first default curve. If it is not
 			// appropriate, the server should raise a HRR.
 			defaultGroup := c.config.curvePreferences()[0]
-			privateKeys[defaultGroup], clientKS, err = c.config.generateKeyShare(defaultGroup)
+			privateKeys[defaultGroup], clientKS, err = c.generateKeyShare(defaultGroup)
 			if err != nil {
 				c.sendAlert(alertInternalError)
 				return err
@@ -200,7 +200,7 @@ func (c *Conn) clientHandshake() error {
 			hello.keyShares = []keyShare{clientKS}
 		} else {
 			for _, ks := range *c.config.KeysharesFor {
-				privateKeys[ks], clientKS, err = c.config.generateKeyShare(ks)
+				privateKeys[ks], clientKS, err = c.generateKeyShare(ks)
 				hello.keyShares = append(hello.keyShares, clientKS)
 			}
 			if err != nil {
@@ -271,7 +271,7 @@ retry:
 
 	// generate new stuff here
 	regenerateKeyshare := func(group CurveID, hrr []byte) error {
-		privateKey, clientKS, err := c.config.generateKeyShare(group)
+		privateKey, clientKS, err := c.generateKeyShare(group)
 		if err != nil {
 			c.sendAlert(alertInternalError)
 			return err
@@ -503,6 +503,50 @@ func (hs *clientHandshakeState) processCertsFromServer(certificates [][]byte) er
 	return nil
 }
 
+// processDelegatedCredentialFromServer unmarshals the delegated credential
+// offered by the server (if present) and validates it using the peer
+// certificate and the signature scheme (`scheme`) indicated by the server in
+// the "signature_scheme" extension.
+func (hs *clientHandshakeState) processDelegatedCredentialFromServer(serialized []byte, scheme SignatureScheme) error {
+	c := hs.c
+
+	var dc *delegatedCredential
+	var err error
+	if serialized != nil {
+		// Assert that the DC extension was indicated by the client.
+		if !hs.hello.delegatedCredential {
+			c.sendAlert(alertUnexpectedMessage)
+			return errors.New("tls: got delegated credential extension without indication")
+		}
+
+		// Parse the delegated credential.
+		dc, err = unmarshalDelegatedCredential(serialized)
+		if err != nil {
+			c.sendAlert(alertDecodeError)
+			return fmt.Errorf("tls: delegated credential: %s", err)
+		}
+	}
+
+	if dc != nil && !c.config.InsecureSkipVerify {
+		if v, err := dc.validate(c.peerCertificates[0], c.config.time()); err != nil {
+			c.sendAlert(alertIllegalParameter)
+			return fmt.Errorf("delegated credential: %s", err)
+		} else if !v {
+			c.sendAlert(alertIllegalParameter)
+			return errors.New("delegated credential: signature invalid")
+		} else if dc.cred.expectedVersion != hs.c.vers {
+			c.sendAlert(alertIllegalParameter)
+			return errors.New("delegated credential: protocol version mismatch")
+		} else if dc.cred.expectedCertVerifyAlgorithm != scheme {
+			c.sendAlert(alertIllegalParameter)
+			return errors.New("delegated credential: signature scheme mismatch")
+		}
+	}
+
+	c.verifiedDc = dc
+	return nil
+}
+
 func (hs *clientHandshakeState) doFullHandshake() error {
 	c := hs.c
 
@@ -640,31 +684,26 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 			return fmt.Errorf("tls: client certificate private key of type %T does not implement crypto.Signer", chainToSend.PrivateKey)
 		}
 
-		var signatureType uint8
-		switch key.Public().(type) {
-		case *ecdsa.PublicKey:
-			signatureType = signatureECDSA
-		case *rsa.PublicKey:
-			signatureType = signatureRSA
-		default:
-			c.sendAlert(alertInternalError)
-			return fmt.Errorf("tls: failed to sign handshake with client certificate: unknown client certificate key type: %T", key)
-		}
-
-		// SignatureAndHashAlgorithm was introduced in TLS 1.2.
-		if certVerify.hasSignatureAndHash {
-			certVerify.signatureAlgorithm, err = hs.finishedHash.selectClientCertSignatureAlgorithm(certReq.supportedSignatureAlgorithms, c.config.signatureAndHashesForClient(), signatureType)
-			if err != nil {
-				c.sendAlert(alertInternalError)
-				return err
-			}
-		}
-		digest, hashFunc, err := hs.finishedHash.hashForClientCertificate(certVerify.signatureAlgorithm, hs.masterSecret)
+		signatureAlgorithm, sigType, hashFunc, err := pickSignatureAlgorithm(key.Public(), certReq.supportedSignatureAlgorithms, hs.hello.supportedSignatureAlgorithms, c.vers)
 		if err != nil {
 			c.sendAlert(alertInternalError)
 			return err
 		}
-		certVerify.signature, err = key.Sign(c.config.rand(), digest, hashFunc)
+
+		// SignatureAndHashAlgorithm was introduced in TLS 1.2.
+		if certVerify.hasSignatureAndHash {
+			certVerify.signatureAlgorithm = signatureAlgorithm
+		}
+		digest, err := hs.finishedHash.hashForClientCertificate(sigType, hashFunc, hs.masterSecret)
+		if err != nil {
+			c.sendAlert(alertInternalError)
+			return err
+		}
+		signOpts := crypto.SignerOpts(hashFunc)
+		if sigType == signature13_RSAPSS {
+			signOpts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: hashFunc}
+		}
+		certVerify.signature, err = key.Sign(c.config.rand(), digest, signOpts)
 		if err != nil {
 			c.sendAlert(alertInternalError)
 			return err

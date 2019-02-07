@@ -464,7 +464,7 @@ func rsaKA(version uint16) keyAgreement {
 	return &rsaKeyAgreement{
 		version: version,
 		auth: &signedKeyAgreement{
-			sigType: signatureRSA,
+			sigType: signature12_RSA,
 			version: version,
 		},
 	}
@@ -475,7 +475,7 @@ func rsaEphemeralKA(version uint16) keyAgreement {
 		version:   version,
 		ephemeral: true,
 		auth: &signedKeyAgreement{
-			sigType: signatureRSA,
+			sigType: signature12_RSA,
 			version: version,
 		},
 	}
@@ -484,7 +484,7 @@ func rsaEphemeralKA(version uint16) keyAgreement {
 func ecdheECDSAKA(version uint16) keyAgreement {
 	return &ecdheKeyAgreement{
 		auth: &signedKeyAgreement{
-			sigType: signatureECDSA,
+			sigType: signature12_ECDSA,
 			version: version,
 		},
 	}
@@ -493,7 +493,7 @@ func ecdheECDSAKA(version uint16) keyAgreement {
 func ecdheRSAKA(version uint16) keyAgreement {
 	return &ecdheKeyAgreement{
 		auth: &signedKeyAgreement{
-			sigType: signatureRSA,
+			sigType: signature12_RSA,
 			version: version,
 		},
 	}
@@ -502,7 +502,7 @@ func ecdheRSAKA(version uint16) keyAgreement {
 func dheRSAKA(version uint16) keyAgreement {
 	return &dheKeyAgreement{
 		auth: &signedKeyAgreement{
-			sigType: signatureRSA,
+			sigType: signature12_RSA,
 			version: version,
 		},
 	}
@@ -511,7 +511,7 @@ func dheRSAKA(version uint16) keyAgreement {
 func dheDSSKA(version uint16) keyAgreement {
 	return &dheKeyAgreement{
 		auth: &signedKeyAgreement{
-			sigType: signatureDSA,
+			sigType: signature12_DSA,
 			version: version,
 		},
 	}

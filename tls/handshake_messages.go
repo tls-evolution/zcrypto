@@ -6,9 +6,23 @@ package tls
 
 import (
 	"bytes"
+	"encoding/binary"
 	"reflect"
 	"strings"
 )
+
+// signAlgosCertList helper function returns either list of signature algorithms in case
+// signature_algorithms_cert extension should be marshalled or nil in the other case.
+// signAlgos is a list of algorithms from signature_algorithms extension. signAlgosCert is a list
+// of algorithms from signature_algorithms_cert extension.
+func signAlgosCertList(signAlgos, signAlgosCert []SignatureScheme) []SignatureScheme {
+	if eqSignatureAlgorithms(signAlgos, signAlgosCert) {
+		// ensure that only supported_algorithms extension is send if supported_algorithms_cert
+		// has identical content
+		return nil
+	}
+	return signAlgosCert
+}
 
 type clientHelloMsg struct {
 	raw                          []byte
@@ -40,6 +54,56 @@ type clientHelloMsg struct {
 	pskKeyExchangeModes          []uint8
 	cookie                       []byte
 	earlyData                    bool
+	delegatedCredential          bool
+}
+
+// Function used for signature_algorithms and signature_algorithrms_cert
+// extensions only (for more details, see TLS 1.3 draft 28, 4.2.3).
+//
+// It advances data slice and returns it, so that it can be used for further
+// processing
+func marshalExtensionSignatureAlgorithms(extension uint16, data []byte, schemes []SignatureScheme) []byte {
+	algNum := uint16(len(schemes))
+	if algNum == 0 {
+		return data
+	}
+
+	binary.BigEndian.PutUint16(data, extension)
+	data = data[2:]
+	binary.BigEndian.PutUint16(data, (2*algNum)+2) // +1 for length
+	data = data[2:]
+	binary.BigEndian.PutUint16(data, (2 * algNum))
+	data = data[2:]
+
+	for _, algo := range schemes {
+		binary.BigEndian.PutUint16(data, uint16(algo))
+		data = data[2:]
+	}
+	return data
+}
+
+// Function used for unmarshalling signature_algorithms or signature_algorithms_cert extensions only
+// (for more details, see TLS 1.3 draft 28, 4.2.3)
+// In case of error function returns alertDecoderError otherwise filled SignatureScheme slice and alertSuccess
+func unmarshalExtensionSignatureAlgorithms(data []byte, length int) ([]SignatureScheme, alert) {
+
+	if length < 2 || length&1 != 0 {
+		return nil, alertDecodeError
+	}
+
+	algLen := binary.BigEndian.Uint16(data)
+	idx := 2
+
+	if int(algLen) != length-2 {
+		return nil, alertDecodeError
+	}
+
+	schemes := make([]SignatureScheme, algLen/2)
+	for i := range schemes {
+		schemes[i] = SignatureScheme(binary.BigEndian.Uint16(data[idx:]))
+		idx += 2
+	}
+	return schemes, alertSuccess
 }
 
 func (m *clientHelloMsg) equal(i interface{}) bool {
@@ -73,7 +137,8 @@ func (m *clientHelloMsg) equal(i interface{}) bool {
 		eqKeyShares(m.keyShares, m1.keyShares) &&
 		eqUint16s(m.supportedVersions, m1.supportedVersions) &&
 		bytes.Equal(m.cookie, m1.cookie) &&
-		m.earlyData == m1.earlyData
+		m.earlyData == m1.earlyData &&
+		m.delegatedCredential == m1.delegatedCredential
 }
 
 func (m *clientHelloMsg) marshal() []byte {
@@ -182,6 +247,9 @@ func (m *clientHelloMsg) marshal() []byte {
 		numExtensions++
 	}
 	if m.earlyData {
+		numExtensions++
+	}
+	if m.delegatedCredential {
 		numExtensions++
 	}
 	if numExtensions > 0 {
@@ -452,6 +520,11 @@ func (m *clientHelloMsg) marshal() []byte {
 	if m.earlyData {
 		z[0] = byte(extensionEarlyData >> 8)
 		z[1] = byte(extensionEarlyData)
+		z = z[4:]
+	}
+	if m.delegatedCredential {
+		z[0] = byte(extensionDelegatedCredential >> 8)
+		z[1] = byte(extensionDelegatedCredential & 0xFF)
 		z = z[4:]
 	}
 
@@ -1636,9 +1709,10 @@ func (m *certificateMsg) unmarshal(data []byte) alert {
 }
 
 type certificateEntry struct {
-	data       []byte
-	ocspStaple []byte
-	sctList    [][]byte
+	data                []byte
+	ocspStaple          []byte
+	sctList             [][]byte
+	delegatedCredential []byte
 }
 
 type certificateMsg13 struct {
@@ -1660,6 +1734,7 @@ func (m *certificateMsg13) equal(i interface{}) bool {
 		ok := bytes.Equal(m.certificates[i].data, m1.certificates[i].data)
 		ok = ok && bytes.Equal(m.certificates[i].ocspStaple, m1.certificates[i].ocspStaple)
 		ok = ok && eqByteSlices(m.certificates[i].sctList, m1.certificates[i].sctList)
+		ok = ok && bytes.Equal(m.certificates[i].delegatedCredential, m1.certificates[i].delegatedCredential)
 		if !ok {
 			return false
 		}
@@ -1685,6 +1760,9 @@ func (m *certificateMsg13) marshal() (x []byte) {
 			for _, sct := range cert.sctList {
 				i += 2 + len(sct)
 			}
+		}
+		if len(cert.delegatedCredential) != 0 {
+			i += 4 + len(cert.delegatedCredential)
 		}
 	}
 
@@ -1760,6 +1838,15 @@ func (m *certificateMsg13) marshal() (x []byte) {
 			sctLenPos[2] = uint8(sctLen >> 8)
 			sctLenPos[3] = uint8(sctLen)
 		}
+		if len(cert.delegatedCredential) != 0 {
+			binary.BigEndian.PutUint16(z, extensionDelegatedCredential)
+			binary.BigEndian.PutUint16(z[2:], uint16(len(cert.delegatedCredential)))
+			z = z[4:]
+			copy(z, cert.delegatedCredential)
+			z = z[len(cert.delegatedCredential):]
+			extensionLen += 4 + len(cert.delegatedCredential)
+		}
+
 		extLenPos[0] = uint8(extensionLen >> 8)
 		extLenPos[1] = uint8(extensionLen)
 	}
@@ -1865,6 +1952,8 @@ func (m *certificateMsg13) unmarshal(data []byte) alert {
 					m.certificates[i].sctList = append(m.certificates[i].sctList, body[2:2+sctLen])
 					body = body[2+sctLen:]
 				}
+			case extensionDelegatedCredential:
+				m.certificates[i].delegatedCredential = body
 			}
 		}
 	}
@@ -2307,6 +2396,190 @@ func (m *certificateRequestMsg) unmarshal(data []byte) alert {
 	return alertSuccess
 }
 
+type certificateRequestMsg13 struct {
+	raw []byte
+
+	requestContext                   []byte
+	supportedSignatureAlgorithms     []SignatureScheme
+	supportedSignatureAlgorithmsCert []SignatureScheme
+	certificateAuthorities           [][]byte
+}
+
+func (m *certificateRequestMsg13) equal(i interface{}) bool {
+	m1, ok := i.(*certificateRequestMsg13)
+	return ok &&
+		bytes.Equal(m.raw, m1.raw) &&
+		bytes.Equal(m.requestContext, m1.requestContext) &&
+		eqByteSlices(m.certificateAuthorities, m1.certificateAuthorities) &&
+		eqSignatureAlgorithms(m.supportedSignatureAlgorithms, m1.supportedSignatureAlgorithms) &&
+		eqSignatureAlgorithms(m.supportedSignatureAlgorithmsCert, m1.supportedSignatureAlgorithmsCert)
+}
+
+func (m *certificateRequestMsg13) marshal() (x []byte) {
+	if m.raw != nil {
+		return m.raw
+	}
+
+	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-21#section-4.3.2
+	length := 1 + len(m.requestContext)
+	numExtensions := 1
+	extensionsLength := 2 + 2*len(m.supportedSignatureAlgorithms)
+
+	if m.getSignatureAlgorithmsCert() != nil {
+		numExtensions += 1
+		extensionsLength += 2 + 2*len(m.getSignatureAlgorithmsCert())
+	}
+
+	casLength := 0
+	if len(m.certificateAuthorities) > 0 {
+		for _, ca := range m.certificateAuthorities {
+			casLength += 2 + len(ca)
+		}
+		extensionsLength += 2 + casLength
+		numExtensions++
+	}
+
+	extensionsLength += 4 * numExtensions
+	length += 2 + extensionsLength
+
+	x = make([]byte, 4+length)
+	x[0] = typeCertificateRequest
+	x[1] = uint8(length >> 16)
+	x[2] = uint8(length >> 8)
+	x[3] = uint8(length)
+
+	x[4] = uint8(len(m.requestContext))
+	copy(x[5:], m.requestContext)
+	z := x[5+len(m.requestContext):]
+
+	z[0] = byte(extensionsLength >> 8)
+	z[1] = byte(extensionsLength)
+	z = z[2:]
+
+	// TODO: this function should be reused by CH
+	z = marshalExtensionSignatureAlgorithms(extensionSignatureAlgorithms, z, m.supportedSignatureAlgorithms)
+
+	if m.getSignatureAlgorithmsCert() != nil {
+		z = marshalExtensionSignatureAlgorithms(extensionSignatureAlgorithmsCert, z, m.getSignatureAlgorithmsCert())
+	}
+	// certificate_authorities
+	if casLength > 0 {
+		z[0] = byte(extensionCAs >> 8)
+		z[1] = byte(extensionCAs)
+		l := 2 + casLength
+		z[2] = byte(l >> 8)
+		z[3] = byte(l)
+		z = z[4:]
+
+		z[0] = uint8(casLength >> 8)
+		z[1] = uint8(casLength)
+		z = z[2:]
+		for _, ca := range m.certificateAuthorities {
+			z[0] = uint8(len(ca) >> 8)
+			z[1] = uint8(len(ca))
+			z = z[2:]
+			copy(z, ca)
+			z = z[len(ca):]
+		}
+	}
+
+	m.raw = x
+	return
+}
+
+func (m *certificateRequestMsg13) unmarshal(data []byte) alert {
+	m.raw = data
+	m.supportedSignatureAlgorithms = nil
+	m.certificateAuthorities = nil
+
+	if len(data) < 5 {
+		return alertDecodeError
+	}
+
+	length := uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+	if uint32(len(data))-4 != length {
+		return alertDecodeError
+	}
+
+	ctxLen := data[4]
+	if len(data) < 5+int(ctxLen)+2 {
+		return alertDecodeError
+	}
+	m.requestContext = data[5 : 5+ctxLen]
+	data = data[5+ctxLen:]
+
+	extensionsLength := int(data[0])<<8 | int(data[1])
+	data = data[2:]
+	if len(data) != extensionsLength {
+		return alertDecodeError
+	}
+
+	for len(data) != 0 {
+		if len(data) < 4 {
+			return alertDecodeError
+		}
+		extension := uint16(data[0])<<8 | uint16(data[1])
+		length := int(data[2])<<8 | int(data[3])
+		data = data[4:]
+		if len(data) < length {
+			return alertDecodeError
+		}
+
+		switch extension {
+		case extensionSignatureAlgorithms:
+			// TODO: unmarshalExtensionSignatureAlgorithms should be shared with CH and pre-1.3 CV
+			// https://tools.ietf.org/html/draft-ietf-tls-tls13-21#section-4.2.3
+			var err alert
+			m.supportedSignatureAlgorithms, err = unmarshalExtensionSignatureAlgorithms(data, length)
+			if err != alertSuccess {
+				return err
+			}
+		case extensionSignatureAlgorithmsCert:
+			var err alert
+			m.supportedSignatureAlgorithmsCert, err = unmarshalExtensionSignatureAlgorithms(data, length)
+			if err != alertSuccess {
+				return err
+			}
+		case extensionCAs:
+			// TODO DRY: share code with CH
+			if length < 2 {
+				return alertDecodeError
+			}
+			l := int(data[0])<<8 | int(data[1])
+			if l != length-2 || l < 3 {
+				return alertDecodeError
+			}
+			cas := make([]byte, l)
+			copy(cas, data[2:])
+			m.certificateAuthorities = nil
+			for len(cas) > 0 {
+				if len(cas) < 2 {
+					return alertDecodeError
+				}
+				caLen := uint16(cas[0])<<8 | uint16(cas[1])
+				cas = cas[2:]
+
+				if len(cas) < int(caLen) {
+					return alertDecodeError
+				}
+
+				m.certificateAuthorities = append(m.certificateAuthorities, cas[:caLen])
+				cas = cas[caLen:]
+			}
+		}
+		data = data[length:]
+	}
+
+	if len(m.supportedSignatureAlgorithms) == 0 {
+		return alertDecodeError
+	}
+	return alertSuccess
+}
+
+func (m *certificateRequestMsg13) getSignatureAlgorithmsCert() []SignatureScheme {
+	return signAlgosCertList(m.supportedSignatureAlgorithms, m.supportedSignatureAlgorithmsCert)
+}
+
 type certificateVerifyMsg struct {
 	raw                 []byte
 	hasSignatureAndHash bool
@@ -2601,6 +2874,20 @@ func (m *newSessionTicketMsg13) unmarshal(data []byte) alert {
 		data = data[length:]
 	}
 
+	return alertSuccess
+}
+
+type endOfEarlyDataMsg struct {
+}
+
+func (*endOfEarlyDataMsg) marshal() []byte {
+	return []byte{typeEndOfEarlyData, 0, 0, 0}
+}
+
+func (*endOfEarlyDataMsg) unmarshal(data []byte) alert {
+	if len(data) != 4 {
+		return alertDecodeError
+	}
 	return alertSuccess
 }
 

@@ -25,6 +25,8 @@ import (
 	"github.com/zmap/zcrypto/tls/x448"
 	"github.com/zmap/zcrypto/x509"
 
+	sidh "github.com/cloudflare/sidh/sidh"
+
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -33,6 +35,17 @@ import (
 const numSessionTickets = 2
 
 type secretLabel int
+
+const (
+	x25519SharedSecretSz = 32
+
+	P503PubKeySz                  = 378
+	P503PrvKeySz                  = 32
+	P503SharedSecretSz            = 126
+	SIDHp503Curve25519PubKeySz    = x25519SharedSecretSz + P503PubKeySz
+	SIDHp503Curve25519PrvKeySz    = x25519SharedSecretSz + P503PrvKeySz
+	SIDHp503Curve25519SharedKeySz = x25519SharedSecretSz + P503SharedSecretSz
+)
 
 const (
 	secretResumptionPskBinder secretLabel = iota
@@ -52,6 +65,40 @@ type keySchedule13 struct {
 	clientRandom   []byte    // Used for keylogging, nil if keylogging is disabled.
 	config         *Config   // Used for KeyLogWriter callback, nil if keylogging is disabled.
 	vers           uint16    // TLS Version
+}
+
+// Interface implemented by DH key exchange strategies
+type dhKex interface {
+	// c - context of current TLS handshake, groupId - ID of an algorithm
+	// (curve/field) being chosen for key agreement. Methods implmenting an
+	// interface always assume that provided groupId is correct.
+	//
+	// In case of success, function returns secret key and ephemeral key. Otherwise
+	// error is set.
+	generate(c *Conn, groupId CurveID) ([]byte, keyShare, error)
+	// c - context of current TLS handshake, ks - public key received
+	// from the other side of the connection, secretKey - is a private key
+	// used for DH key agreement. Function returns shared secret in case
+	// of success or empty slice otherwise.
+	derive(c *Conn, ks keyShare, secretKey []byte) []byte
+}
+
+// Key Exchange strategies per curve type
+type kexNist struct{}     // Used by NIST curves; P-256, P-384, P-512
+type kexX25519 struct{}   // Used by X25519
+type kexSIDHp503 struct{} // Used by SIDH/P503
+type kexHybridSIDHp503X25519 struct {
+	classicKEX kexX25519
+	pqKEX      kexSIDHp503
+} // Used by SIDH-ECDH hybrid scheme
+
+// Routing map for key exchange strategies
+var dhKexStrat = map[CurveID]dhKex{
+	CurveP256: &kexNist{},
+	CurveP384: &kexNist{},
+	CurveP521: &kexNist{},
+	X25519:    &kexX25519{},
+	HybridSIDHp503Curve25519: &kexHybridSIDHp503X25519{},
 }
 
 func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte, vers uint16) *keySchedule13 {
@@ -78,6 +125,15 @@ func (ks *keySchedule13) setSecret(secret []byte) {
 		salt = ks.hkdfExpandLabel(hash, salt, h0, "derived", hash.Size())
 	}
 	ks.secret = hkdfExtract(hash, secret, salt)
+}
+
+// Depending on role returns pair of key variant to be used by
+// local and remote process.
+func getSidhKeyVariant(isClient bool) (sidh.KeyVariant, sidh.KeyVariant) {
+	if isClient {
+		return sidh.KeyVariant_SIDH_A, sidh.KeyVariant_SIDH_B
+	}
+	return sidh.KeyVariant_SIDH_B, sidh.KeyVariant_SIDH_A
 }
 
 // write appends the data to the transcript hash context.
@@ -164,7 +220,7 @@ func (ks *keySchedule13) prepareCipher(secretLabel secretLabel) (interface{}, []
 	trafficSecret := ks.deriveSecret(secretLabel)
 	hash := hashForSuite(ks.suite)
 	key := ks.hkdfExpandLabel(hash, trafficSecret, nil, "key", ks.suite.keyLen)
-	iv := ks.hkdfExpandLabel(hash, trafficSecret, nil, "iv", 12)
+	iv := ks.hkdfExpandLabel(hash, trafficSecret, nil, "iv", ks.suite.ivLen)
 	return ks.suite.aead(key, iv), trafficSecret
 }
 
@@ -193,13 +249,7 @@ CurvePreferenceLoop:
 		return errors.New("tls: HelloRetryRequest not implemented") // TODO(filippo)
 	}
 
-	if committer, ok := c.conn.(Committer); ok {
-		if err := committer.Commit(); err != nil {
-			return err
-		}
-	}
-
-	privateKey, serverKS, err := config.generateKeyShare(ks.group)
+	privateKey, serverKS, err := c.generateKeyShare(ks.group)
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err
@@ -227,7 +277,7 @@ CurvePreferenceLoop:
 
 	earlyClientCipher, _ := hs.keySchedule.prepareCipher(secretEarlyClient)
 
-	ecdheSecret := deriveECDHESecret(ks, privateKey)
+	ecdheSecret := c.deriveDHESecret(ks, privateKey)
 	if ecdheSecret == nil {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("tls: bad ECDHE client share")
@@ -235,6 +285,11 @@ CurvePreferenceLoop:
 
 	hs.keySchedule.write(hs.hello.marshal())
 	if _, err := c.writeRecord(recordTypeHandshake, hs.hello.marshal()); err != nil {
+		return err
+	}
+
+	// middlebox compatibility mode: send CCS after first handshake message
+	if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
 		return err
 	}
 
@@ -247,12 +302,27 @@ CurvePreferenceLoop:
 	serverFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, sTrafficSecret, nil, "finished", hashSize)
 	hs.clientFinishedKey = hs.keySchedule.hkdfExpandLabel(hash, cTrafficSecret, nil, "finished", hashSize)
 
+	// EncryptedExtensions
 	hs.keySchedule.write(hs.hello13Enc.marshal())
 	if _, err := c.writeRecord(recordTypeHandshake, hs.hello13Enc.marshal()); err != nil {
 		return err
 	}
 
+	// TODO: we should have 2 separated methods - one for full-handshake and the other for PSK-handshake
 	if !c.didResume {
+		// Server MUST NOT send CertificateRequest if authenticating with PSK
+		if c.config.ClientAuth >= RequestClientCert {
+
+			certReq := new(certificateRequestMsg13)
+			// extension 'signature_algorithms' MUST be specified
+			certReq.supportedSignatureAlgorithms = supportedSignatureAlgorithms13
+			certReq.supportedSignatureAlgorithmsCert = supportedSigAlgorithmsCert(supportedSignatureAlgorithms13)
+			hs.keySchedule.write(certReq.marshal())
+			if _, err := hs.c.writeRecord(recordTypeHandshake, certReq.marshal()); err != nil {
+				return err
+			}
+		}
+
 		if err := hs.sendCertificate13(); err != nil {
 			return err
 		}
@@ -289,10 +359,11 @@ CurvePreferenceLoop:
 	return nil
 }
 
-// readClientFinished13 is called when, on the second flight of the client,
-// a handshake message is received. This might be immediately or after the
-// early data. Once done it sends the session tickets. Under c.in lock.
-func (hs *serverHandshakeState) readClientFinished13(hasHandshakeLock bool) error {
+// readClientFinished13 is called during the server handshake (when no early
+// data it available) or after reading all early data. It discards early data if
+// the server did not accept it and then verifies the Finished message. Once
+// done it sends the session tickets. Under c.in lock.
+func (hs *serverHandshakeState) readClientFinished13(hasConfirmLock bool) error {
 	c := hs.c
 
 	// If the client advertised and sends early data while the server does
@@ -319,6 +390,55 @@ func (hs *serverHandshakeState) readClientFinished13(hasHandshakeLock bool) erro
 	msg, err := c.readHandshake()
 	if err != nil {
 		return err
+	}
+
+	// client authentication
+	// (4.4.2) Client MUST send certificate msg if requested by server
+	if c.config.ClientAuth >= RequestClientCert && !c.didResume {
+		certMsg, ok := msg.(*certificateMsg13)
+		if !ok {
+			c.sendAlert(alertCertificateRequired)
+			return unexpectedMessageError(certMsg, msg)
+		}
+
+		hs.keySchedule.write(certMsg.marshal())
+		certs := getCertsFromEntries(certMsg.certificates)
+		pubKey, err := hs.processCertsFromClient(certs)
+		if err != nil {
+			return err
+		}
+
+		if len(certs) > 0 {
+			// 4.4.3: CertificateVerify MUST appear immediately after Certificate msg
+			msg, err = c.readHandshake()
+			if err != nil {
+				return err
+			}
+
+			certVerify, ok := msg.(*certificateVerifyMsg)
+			if !ok {
+				c.sendAlert(alertUnexpectedMessage)
+				return unexpectedMessageError(certVerify, msg)
+			}
+
+			err, alertCode := verifyPeerHandshakeSignature(
+				certVerify,
+				pubKey,
+				supportedSignatureAlgorithms13,
+				hs.keySchedule.transcriptHash.Sum(nil),
+				"TLS 1.3, client CertificateVerify")
+			if err != nil {
+				c.sendAlert(alertCode)
+				return err
+			}
+			hs.keySchedule.write(certVerify.marshal())
+		}
+
+		// Read next chunk
+		msg, err = c.readHandshake()
+		if err != nil {
+			return err
+		}
 	}
 
 	clientFinished, ok := msg.(*finishedMsg)
@@ -348,7 +468,11 @@ func (hs *serverHandshakeState) readClientFinished13(hasHandshakeLock bool) erro
 	// Any read operation after handshakeRunning and before handshakeConfirmed
 	// will be holding this lock, which we release as soon as the confirmation
 	// happens, even if the Read call might do more work.
-	if !hasHandshakeLock {
+	// If a Handshake is pending, c.confirmMutex will never be locked as
+	// ConfirmHandshake will wait for the handshake to complete. If a
+	// handshake was complete, and this was a confirmation, unlock
+	// c.confirmMutex now to allow readers to proceed.
+	if !hasConfirmLock {
 		c.confirmMutex.Unlock()
 	}
 
@@ -368,6 +492,16 @@ func (hs *serverHandshakeState) sendCertificate13() error {
 	if len(certEntries) > 0 && hs.clientHello.scts {
 		certEntries[0].sctList = hs.cert.SignedCertificateTimestamps
 	}
+
+	// If hs.delegatedCredential is set (see hs.readClientHello()) then the
+	// server is using the delegated credential extension. The DC is added as an
+	// extension to the end-entity certificate, i.e., the last CertificateEntry
+	// of Certificate.certficate_list. (For details, see
+	// https://tools.ietf.org/html/draft-ietf-tls-subcerts-02.)
+	if len(certEntries) > 0 && hs.clientHello.delegatedCredential && hs.delegatedCredential != nil {
+		certEntries[0].delegatedCredential = hs.delegatedCredential
+	}
+
 	certMsg := &certificateMsg13{certificates: certEntries}
 
 	hs.keySchedule.write(certMsg.marshal())
@@ -407,17 +541,23 @@ func (hs *serverHandshakeState) sendCertificate13() error {
 	return nil
 }
 
-func (c *Conn) handleEndOfEarlyData() {
+func (c *Conn) handleEndOfEarlyData() error {
 	if c.phase != readingEarlyData || c.vers < VersionTLS13 {
-		c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
-		return
+		return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 	}
+	msg, err := c.readHandshake()
+	if err != nil {
+		return err
+	}
+	endOfEarlyData, ok := msg.(*endOfEarlyDataMsg)
+	// No handshake messages are allowed after EOD.
+	if !ok || c.hand.Len() > 0 {
+		return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
+	}
+	c.hs.keySchedule.write(endOfEarlyData.marshal())
 	c.phase = waitingClientFinished
-	if c.hand.Len() > 0 {
-		c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
-		return
-	}
 	c.in.setCipher(c.vers, c.hs.hsClientCipher)
+	return nil
 }
 
 // selectTLS13SignatureScheme chooses the SignatureScheme for the CertificateVerify
@@ -427,9 +567,9 @@ func (c *Conn) handleEndOfEarlyData() {
 // See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.4.1.2
 func (hs *serverHandshakeState) selectTLS13SignatureScheme() (sigScheme SignatureScheme, err error) {
 	var supportedSchemes []SignatureScheme
-	signer, ok := hs.cert.PrivateKey.(crypto.Signer)
+	signer, ok := hs.privateKey.(crypto.Signer)
 	if !ok {
-		return 0, errors.New("tls: certificate private key does not implement crypto.Signer")
+		return 0, errors.New("tls: private key does not implement crypto.Signer")
 	}
 	pk := signer.Public()
 	if _, ok := pk.(*rsa.PublicKey); ok {
@@ -500,109 +640,22 @@ func prepareDigitallySigned(hash crypto.Hash, context string, data []byte) []byt
 	return h.Sum(nil)
 }
 
-func (c *Config) generateKeyShare(curveID CurveID) ([]byte, keyShare, error) {
-	switch curveID {
-	case X25519:
-		var scalar, public [32]byte
-		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
-			return nil, keyShare{}, err
-		}
-
-		curve25519.ScalarBaseMult(&public, &scalar)
-		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
-	case X448:
-		var scalar, public [56]byte
-		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
-			return nil, keyShare{}, err
-		}
-
-		x448.ScalarBaseMult(&public, &scalar)
-		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
-	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
-		field, ok := fieldForCurveID(curveID)
-		if !ok {
-			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported field")
-		}
-
-		privateKey, pub, err := FieldGenerateKey(field, c.rand())
-		if err != nil {
-			return nil, keyShare{}, err
-		}
-		ecdhePublic := pub.Bytes()
-
-		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
-	default: // curves
-		curve, ok := curveForCurveID(curveID)
-		if !ok {
-			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported curve")
-		}
-
-		privateKey, x, y, err := elliptic.GenerateKey(curve, c.rand())
-		if err != nil {
-			return nil, keyShare{}, err
-		}
-		ecdhePublic := elliptic.Marshal(curve, x, y)
-
-		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
+// generateKeyShare generates keypair. Private key is returned as first argument, public key
+// is returned in keyShare.data. keyshare.curveID stores ID of the scheme used.
+func (c *Conn) generateKeyShare(curveID CurveID) ([]byte, keyShare, error) {
+	if val, ok := dhKexStrat[curveID]; ok {
+		return val.generate(c, curveID)
 	}
+	return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported curve")
 }
 
-func deriveECDHESecret(ks keyShare, secretKey []byte) []byte {
-	switch ks.group {
-
-	case X25519:
-		if len(ks.data) != 32 {
-			return nil
-		}
-
-		var theirPublic, sharedKey, scalar [32]byte
-		copy(theirPublic[:], ks.data)
-		copy(scalar[:], secretKey)
-		curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
-		return sharedKey[:]
-	case X448:
-		if len(ks.data) != 56 {
-			return nil
-		}
-
-		var theirPublic, sharedKey, scalar [56]byte
-		copy(theirPublic[:], ks.data)
-		copy(scalar[:], secretKey)
-		x448.ScalarMult(&sharedKey, &scalar, &theirPublic)
-		return sharedKey[:]
-	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
-		field, ok := fieldForCurveID(ks.group)
-		if !ok {
-			return nil
-		}
-
-		fieldSize := field.Size()
-		xBytes := field.Pow(ks.data, secretKey)
-		if len(xBytes) == fieldSize {
-			return xBytes
-		}
-		buf := make([]byte, fieldSize)
-		copy(buf[fieldSize-len(xBytes):], xBytes)
-		return buf
-	default:
-		curve, ok := curveForCurveID(ks.group)
-		if !ok {
-			return nil
-		}
-		x, y := elliptic.Unmarshal(curve, ks.data)
-		if x == nil {
-			return nil
-		}
-		x, _ = curve.ScalarMult(x, y, secretKey)
-		xBytes := x.Bytes()
-		curveSize := (curve.Params().BitSize + 8 - 1) >> 3
-		if len(xBytes) == curveSize {
-			return xBytes
-		}
-		buf := make([]byte, curveSize)
-		copy(buf[len(buf)-len(xBytes):], xBytes)
-		return buf
+// DH key agreement. ks stores public key, secretKey stores private key used for ephemeral
+// key agreement. Function returns shared secret in case of success or empty slice otherwise.
+func (c *Conn) deriveDHESecret(ks keyShare, secretKey []byte) []byte {
+	if val, ok := dhKexStrat[ks.group]; ok {
+		return val.derive(c, ks, secretKey)
 	}
+	return nil
 }
 
 func (ks *keySchedule13) hkdfExpandLabel(hash crypto.Hash, secret, hashValue []byte, label string, L int) []byte {
@@ -700,7 +753,7 @@ func (hs *serverHandshakeState) checkPSK() (isResumed bool, alert alert) {
 			continue
 		}
 
-		hs.keySchedule.setSecret(s.resumptionSecret)
+		hs.keySchedule.setSecret(s.pskSecret)
 		binderKey := hs.keySchedule.deriveSecret(secretResumptionPskBinder)
 		binderFinishedKey := hs.keySchedule.hkdfExpandLabel(hash, binderKey, nil, "finished", hashSize)
 		chHash := hash.New()
@@ -748,18 +801,18 @@ func (hs *serverHandshakeState) sendSessionTicket13() error {
 		return nil
 	}
 
-	resumptionSecret := hs.keySchedule.deriveSecret(secretResumption)
+	resumptionMasterSecret := hs.keySchedule.deriveSecret(secretResumption)
 
 	ageAddBuf := make([]byte, 4)
 	sessionState := &sessionState13{
-		vers:             c.vers,
-		suite:            hs.suite.id,
-		createdAt:        uint64(time.Now().Unix()),
-		resumptionSecret: resumptionSecret,
-		alpnProtocol:     c.clientProtocol,
-		SNI:              c.serverName,
-		maxEarlyDataLen:  c.config.Max0RTTDataSize,
+		vers:            c.vers,
+		suite:           hs.suite.id,
+		createdAt:       uint64(time.Now().Unix()),
+		alpnProtocol:    c.clientProtocol,
+		SNI:             c.serverName,
+		maxEarlyDataLen: c.config.Max0RTTDataSize,
 	}
+	hash := hashForSuite(hs.suite)
 
 	for i := 0; i < numSessionTickets; i++ {
 		if _, err := io.ReadFull(c.config.rand(), ageAddBuf); err != nil {
@@ -768,6 +821,12 @@ func (hs *serverHandshakeState) sendSessionTicket13() error {
 		}
 		sessionState.ageAdd = uint32(ageAddBuf[0])<<24 | uint32(ageAddBuf[1])<<16 |
 			uint32(ageAddBuf[2])<<8 | uint32(ageAddBuf[3])
+		// ticketNonce must be a unique value for this connection.
+		// Assume there are no more than 255 tickets, otherwise two
+		// tickets might have the same PSK which could be a problem if
+		// one of them is compromised.
+		ticketNonce := []byte{byte(i)}
+		sessionState.pskSecret = hs.keySchedule.hkdfExpandLabel(hash, resumptionMasterSecret, ticketNonce, "resumption", hash.Size())
 		ticket := sessionState.marshal()
 		var err error
 		if c.config.SessionTicketSealer != nil {
@@ -789,7 +848,7 @@ func (hs *serverHandshakeState) sendSessionTicket13() error {
 			withEarlyDataInfo:  c.config.Max0RTTDataSize > 0,
 			ageAdd:             sessionState.ageAdd,
 			withNonce:          c.vers >= VersionTLS13Draft21,
-			nonce:              []byte{byte(i)},
+			nonce:              ticketNonce,
 			ticket:             ticket,
 		}
 		if _, err := c.writeRecord(recordTypeHandshake, ticketMsg.marshal()); err != nil {
@@ -831,12 +890,12 @@ func (hs *serverHandshakeState) traceErr(err error) {
 	}
 }
 
-func (hs *clientHandshakeState) processCertsFromServer13(certMsg *certificateMsg13) error {
-	certs := make([][]byte, len(certMsg.certificates))
-	for i, cert := range certMsg.certificates {
+func getCertsFromEntries(certEntries []certificateEntry) [][]byte {
+	certs := make([][]byte, len(certEntries))
+	for i, cert := range certEntries {
 		certs[i] = cert.data
 	}
-	return hs.processCertsFromServer(certs)
+	return certs
 }
 
 func (hs *clientHandshakeState) processEncryptedExtensions(ee *encryptedExtensionsMsg) error {
@@ -848,44 +907,111 @@ func (hs *clientHandshakeState) processEncryptedExtensions(ee *encryptedExtensio
 	return nil
 }
 
-func (hs *clientHandshakeState) verifyPeerCertificate(certVerify *certificateVerifyMsg) error {
-	if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms) {
-		return fmt.Errorf("tls: unsupported signature algorithm for server certificate: %04x", certVerify.signatureAlgorithm)
-		return errors.New("tls: unsupported signature algorithm for server certificate")
+func verifyPeerHandshakeSignature(
+	certVerify *certificateVerifyMsg,
+	pubKey crypto.PublicKey,
+	signAlgosKnown []SignatureScheme,
+	transHash []byte,
+	contextString string) (error, alert) {
+
+	_, sigType, hashFunc, err := pickSignatureAlgorithm(
+		pubKey,
+		[]SignatureScheme{certVerify.signatureAlgorithm},
+		signAlgosKnown,
+		VersionTLS13)
+	if err != nil {
+		return err, alertHandshakeFailure
 	}
-	sigHash := hashForSignatureScheme(certVerify.signatureAlgorithm)
-	sigAlg := signatureFromSignatureScheme(certVerify.signatureAlgorithm)
-	pub := hs.c.peerCertificates[0].PublicKey
-	digest := prepareDigitallySigned(sigHash, "TLS 1.3, server CertificateVerify", hs.keySchedule.transcriptHash.Sum(nil))
-	switch key := pub.(type) {
-	case *ecdsa.PublicKey, *x509.AugmentedECDSA:
-		if sigAlg != signatureECDSA {
-			return errors.New("tls: bad signature type for server's ECDSA certificate")
+
+	digest := prepareDigitallySigned(hashFunc, contextString, transHash)
+	err = verifyHandshakeSignature(sigType, pubKey, hashFunc, digest, certVerify.signature)
+
+	if err != nil {
+		return err, alertDecryptError
+	}
+
+	return nil, alertSuccess
+}
+
+func (hs *clientHandshakeState) getCertificate13(certReq *certificateRequestMsg13) (*Certificate, error) {
+	certReq12 := &certificateRequestMsg{
+		hasSignatureAndHash:          true,
+		supportedSignatureAlgorithms: certReq.supportedSignatureAlgorithms,
+		certificateAuthorities:       certReq.certificateAuthorities,
+	}
+
+	var rsaAvail, ecdsaAvail bool
+	for _, sigAlg := range certReq.supportedSignatureAlgorithms {
+		switch signatureFromSignatureScheme(sigAlg) {
+		case signature13_PKCS1v15, signature13_RSAPSS:
+			rsaAvail = true
+		case signature13_ECDSA:
+			ecdsaAvail = true
 		}
-		ecdsaSig := new(ecdsaSignature)
-		if _, err := asn1.Unmarshal(certVerify.signature, ecdsaSig); err != nil {
-			return err
-		}
-		if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
-			return errors.New("tls: ECDSA signature contained zero or negative values")
-		}
-		pub, ok := key.(*ecdsa.PublicKey)
-		if !ok {
-			pub = key.(*x509.AugmentedECDSA).Pub
-		}
-		if !ecdsa.Verify(pub, digest, ecdsaSig.R, ecdsaSig.S) {
-			return errors.New("tls: ECDSA verification failure")
-		}
+	}
+	if rsaAvail {
+		certReq12.certificateTypes = append(certReq12.certificateTypes, certTypeRSASign)
+	}
+	if ecdsaAvail {
+		certReq12.certificateTypes = append(certReq12.certificateTypes, certTypeECDSASign)
+	}
+
+	return hs.getCertificate(certReq12)
+}
+
+func (hs *clientHandshakeState) sendCertificate13(chainToSend *Certificate, certReq *certificateRequestMsg13) error {
+	c := hs.c
+
+	certEntries := []certificateEntry{}
+	for _, cert := range chainToSend.Certificate {
+		certEntries = append(certEntries, certificateEntry{data: cert})
+	}
+	certMsg := &certificateMsg13{certificates: certEntries}
+
+	hs.keySchedule.write(certMsg.marshal())
+	if _, err := c.writeRecord(recordTypeHandshake, certMsg.marshal()); err != nil {
+		return err
+	}
+
+	if len(certEntries) == 0 {
+		// No client cert available, nothing to sign.
 		return nil
-	case *rsa.PublicKey:
-		if sigAlg != signatureRSAPSS {
-			return errors.New("tls: bad signature type for server's RSA certificate")
-		}
-		signOpts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}
-		return rsa.VerifyPSS(key, sigHash, digest, certVerify.signature, signOpts)
-	default:
-		return errors.New("tls: unsupported certificate type")
 	}
+
+	key, ok := chainToSend.PrivateKey.(crypto.Signer)
+	if !ok {
+		c.sendAlert(alertInternalError)
+		return fmt.Errorf("tls: client certificate private key of type %T does not implement crypto.Signer", chainToSend.PrivateKey)
+	}
+
+	signatureAlgorithm, sigType, hashFunc, err := pickSignatureAlgorithm(key.Public(), certReq.supportedSignatureAlgorithms, hs.hello.supportedSignatureAlgorithms, c.vers)
+	if err != nil {
+		hs.c.sendAlert(alertHandshakeFailure)
+		return err
+	}
+
+	digest := prepareDigitallySigned(hashFunc, "TLS 1.3, client CertificateVerify", hs.keySchedule.transcriptHash.Sum(nil))
+	signOpts := crypto.SignerOpts(hashFunc)
+	if sigType == signature13_RSAPSS {
+		signOpts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: hashFunc}
+	}
+	signature, err := key.Sign(c.config.rand(), digest, signOpts)
+	if err != nil {
+		c.sendAlert(alertInternalError)
+		return err
+	}
+
+	verifyMsg := &certificateVerifyMsg{
+		hasSignatureAndHash: true,
+		signatureAlgorithm:  signatureAlgorithm,
+		signature:           signature,
+	}
+	hs.keySchedule.write(verifyMsg.marshal())
+	if _, err := c.writeRecord(recordTypeHandshake, verifyMsg.marshal()); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (hs *clientHandshakeState) doTLS13Handshake() error {
@@ -893,32 +1019,32 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	hash := hashForSuite(hs.suite)
 	hashSize := hash.Size()
 	serverHello := hs.serverHello
-	// TODO check if keyshare is unacceptable, raise HRR.
+	c.scts = serverHello.scts
 
 	// Draft22: Middlebox Compatibility Mode
 	if serverHello.vers >= VersionTLS13Draft22 {
+		// middlebox compatibility mode, send CCS before second flight.
+		if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
+			return err
+		}
+
 		if bytes.Compare(hs.hello.sessionId, serverHello.sessionId) != 0 {
 			c.sendAlert(alertIllegalParameter)
 			return errors.New("middlebox compatibility mode violation")
 		}
 	}
 
-	/*
-		clientKS := hs.hello.keyShares[0]
-		if serverHello.keyShare.group != clientKS.group {
-			c.sendAlert(alertIllegalParameter)
-			return errors.New("bad or missing key share from server")
-		}*/
+	// TODO check if keyshare is unacceptable, raise HRR.
 
-	privKey, ok := hs.privateKeys[serverHello.keyShare.group]
-	if !ok {
+	clientKS := hs.hello.keyShares[0]
+	if serverHello.keyShare.group != clientKS.group {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("bad or missing key share from server")
 	}
 
 	// 0-RTT is not supported yet, so use an empty PSK.
 	hs.keySchedule.setSecret(nil)
-	ecdheSecret := deriveECDHESecret(serverHello.keyShare, privKey)
+	ecdheSecret := c.deriveDHESecret(serverHello.keyShare, hs.privateKeys[serverHello.keyShare.group])
 	if ecdheSecret == nil {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("tls: bad ECDHE server share")
@@ -958,7 +1084,23 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	if err != nil {
 		return err
 	}
-	// TODO handle optional CertificateRequest
+
+	var chainToSend *Certificate
+	certReq, isCertRequested := msg.(*certificateRequestMsg13)
+	if isCertRequested {
+		hs.keySchedule.write(certReq.marshal())
+
+		if chainToSend, err = hs.getCertificate13(certReq); err != nil {
+			c.sendAlert(alertInternalError)
+			return err
+		}
+
+		msg, err = c.readHandshake()
+		if err != nil {
+			return err
+		}
+	}
+
 	certMsg, ok := msg.(*certificateMsg13)
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
@@ -966,7 +1108,8 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	}
 	hs.keySchedule.write(certMsg.marshal())
 	// Validate certificates.
-	if err := hs.processCertsFromServer13(certMsg); err != nil {
+	certs := getCertsFromEntries(certMsg.certificates)
+	if err := hs.processCertsFromServer(certs); err != nil {
 		return err
 	}
 
@@ -980,7 +1123,36 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(certVerifyMsg, msg)
 	}
-	if err = hs.verifyPeerCertificate(certVerifyMsg); err != nil {
+	// Validate the DC if present. The DC is only processed if the extension was
+	// indicated by the ClientHello; otherwise this call will result in an
+	// "illegal_parameter" alert.
+	if len(certMsg.certificates) > 0 {
+		if err := hs.processDelegatedCredentialFromServer(
+			certMsg.certificates[0].delegatedCredential,
+			certVerifyMsg.signatureAlgorithm); err != nil {
+			return err
+		}
+	}
+
+	// Set the public key used to verify the handshake.
+	pk := hs.c.peerCertificates[0].PublicKey
+
+	// If the delegated credential extension has successfully been negotiated,
+	// then the  CertificateVerify signature will have been produced with the
+	// DelegatedCredential's private key.
+	if hs.c.verifiedDc != nil {
+		pk = hs.c.verifiedDc.cred.publicKey
+	}
+
+	// Verify the handshake signature.
+	err, alertCode := verifyPeerHandshakeSignature(
+		certVerifyMsg,
+		pk,
+		hs.hello.supportedSignatureAlgorithms,
+		hs.keySchedule.transcriptHash.Sum(nil),
+		"TLS 1.3, server CertificateVerify")
+	if err != nil {
+		c.sendAlert(alertCode)
 		return err
 	}
 	hs.keySchedule.write(certVerifyMsg.marshal())
@@ -1010,10 +1182,22 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		}
 	}
 
-	// Server has authenticated itself, change our cipher.
+	// Server has authenticated itself. Calculate application traffic secrets.
+	hs.keySchedule.setSecret(nil) // derive master secret
+	appServerCipher, _ := hs.keySchedule.prepareCipher(secretApplicationServer)
+	appClientCipher, _ := hs.keySchedule.prepareCipher(secretApplicationClient)
+	// TODO store initial traffic secret key for KeyUpdate GH #85
+
+	// Change outbound handshake cipher for final step
 	c.out.setCipher(c.vers, clientCipher)
 
-	// TODO optionally send a client cert
+	// Client auth requires sending a (possibly empty) Certificate followed
+	// by a CertificateVerify message (if there was an actual certificate).
+	if isCertRequested {
+		if err := hs.sendCertificate13(chainToSend, certReq); err != nil {
+			return err
+		}
+	}
 
 	// Send Finished
 	verifyData := hmacOfSum(hash, hs.keySchedule.transcriptHash, clientFinishedKey)
@@ -1024,16 +1208,315 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 		return err
 	}
 
-	// Calculate application traffic secrets.
-	hs.keySchedule.setSecret(nil) // derive master secret
-	// TODO store initial traffic secret key for KeyUpdate
-	clientCipher, _ = hs.keySchedule.prepareCipher(secretApplicationClient)
-	serverCipher, _ = hs.keySchedule.prepareCipher(secretApplicationServer)
-	c.out.setCipher(c.vers, clientCipher)
+	// Handshake done, set application traffic secret
+	c.out.setCipher(c.vers, appClientCipher)
 	if c.hand.Len() > 0 {
 		c.sendAlert(alertUnexpectedMessage)
 		return errors.New("tls: unexpected data after handshake")
 	}
-	c.in.setCipher(c.vers, serverCipher)
+	c.in.setCipher(c.vers, appServerCipher)
 	return nil
+}
+
+// supportedSigAlgorithmsCert iterates over schemes and filters out those algorithms
+// which are not supported for certificate verification.
+func supportedSigAlgorithmsCert(schemes []SignatureScheme) (ret []SignatureScheme) {
+	for _, sig := range schemes {
+		// X509 doesn't support PSS signatures
+		if !signatureSchemeIsPSS(sig) {
+			ret = append(ret, sig)
+		}
+	}
+	return
+}
+
+// Functions below implement dhKex interface for different DH shared secret agreements
+
+// KEX: P-256, P-384, P-512 KEX
+func (kexNist) generate(c *Conn, groupId CurveID) (private []byte, ks keyShare, err error) {
+	// never fails
+	curve, _ := curveForCurveID(groupId)
+	private, x, y, err := elliptic.GenerateKey(curve, c.config.rand())
+	if err != nil {
+		return nil, keyShare{}, err
+	}
+	ks.group = groupId
+	ks.data = elliptic.Marshal(curve, x, y)
+	return
+}
+func (kexNist) derive(c *Conn, ks keyShare, secretKey []byte) []byte {
+	// never fails
+	curve, _ := curveForCurveID(ks.group)
+	x, y := elliptic.Unmarshal(curve, ks.data)
+	if x == nil {
+		return nil
+	}
+	x, _ = curve.ScalarMult(x, y, secretKey)
+	xBytes := x.Bytes()
+	curveSize := (curve.Params().BitSize + 8 - 1) >> 3
+	if len(xBytes) == curveSize {
+		return xBytes
+	}
+	buf := make([]byte, curveSize)
+	copy(buf[len(buf)-len(xBytes):], xBytes)
+	return buf
+}
+
+// KEX: X25519
+func (kexX25519) generate(c *Conn, groupId CurveID) ([]byte, keyShare, error) {
+	var scalar, public [x25519SharedSecretSz]byte
+	if _, err := io.ReadFull(c.config.rand(), scalar[:]); err != nil {
+		return nil, keyShare{}, err
+	}
+	curve25519.ScalarBaseMult(&public, &scalar)
+	return scalar[:], keyShare{group: X25519, data: public[:]}, nil
+}
+
+func (kexX25519) derive(c *Conn, ks keyShare, secretKey []byte) []byte {
+	var theirPublic, sharedKey, scalar [x25519SharedSecretSz]byte
+	if len(ks.data) != x25519SharedSecretSz {
+		return nil
+	}
+	copy(theirPublic[:], ks.data)
+	copy(scalar[:], secretKey)
+	curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
+	return sharedKey[:]
+}
+
+// KEX: SIDH/503
+func (kexSIDHp503) generate(c *Conn, groupId CurveID) ([]byte, keyShare, error) {
+	var variant, _ = getSidhKeyVariant(c.isClient)
+	var prvKey = sidh.NewPrivateKey(sidh.FP_503, variant)
+	if prvKey.Generate(c.config.rand()) != nil {
+		return nil, keyShare{}, errors.New("tls: private SIDH key generation failed")
+	}
+	pubKey := prvKey.GeneratePublicKey()
+	return prvKey.Export(), keyShare{group: 0 /*UNUSED*/, data: pubKey.Export()}, nil
+}
+
+func (kexSIDHp503) derive(c *Conn, ks keyShare, key []byte) []byte {
+	var prvVariant, pubVariant = getSidhKeyVariant(c.isClient)
+	var prvKeySize = P503PrvKeySz
+
+	if len(ks.data) != P503PubKeySz || len(key) != prvKeySize {
+		return nil
+	}
+
+	prvKey := sidh.NewPrivateKey(sidh.FP_503, prvVariant)
+	pubKey := sidh.NewPublicKey(sidh.FP_503, pubVariant)
+
+	if err := prvKey.Import(key); err != nil {
+		return nil
+	}
+	if err := pubKey.Import(ks.data); err != nil {
+		return nil
+	}
+
+	// Never fails
+	sharedKey, _ := sidh.DeriveSecret(prvKey, pubKey)
+	return sharedKey
+}
+
+// KEX Hybrid SIDH/503-X25519
+func (kex *kexHybridSIDHp503X25519) generate(c *Conn, groupId CurveID) (private []byte, ks keyShare, err error) {
+	var pubHybrid [SIDHp503Curve25519PubKeySz]byte
+	var prvHybrid [SIDHp503Curve25519PrvKeySz]byte
+
+	// Generate ephemeral key for classic x25519
+	private, ks, err = kex.classicKEX.generate(c, groupId)
+	if err != nil {
+		return
+	}
+	copy(prvHybrid[:], private)
+	copy(pubHybrid[:], ks.data)
+
+	// Generate PQ ephemeral key for SIDH
+	private, ks, err = kex.pqKEX.generate(c, groupId)
+	if err != nil {
+		return
+	}
+	copy(prvHybrid[x25519SharedSecretSz:], private)
+	copy(pubHybrid[x25519SharedSecretSz:], ks.data)
+	return prvHybrid[:], keyShare{group: HybridSIDHp503Curve25519, data: pubHybrid[:]}, nil
+}
+
+func (kex *kexHybridSIDHp503X25519) derive(c *Conn, ks keyShare, key []byte) []byte {
+	var sharedKey [SIDHp503Curve25519SharedKeySz]byte
+	var ret []byte
+	var tmpKs keyShare
+
+	// Key agreement for classic
+	tmpKs.group = X25519
+	tmpKs.data = ks.data[:x25519SharedSecretSz]
+	ret = kex.classicKEX.derive(c, tmpKs, key[:x25519SharedSecretSz])
+	if ret == nil {
+		return nil
+	}
+	copy(sharedKey[:], ret)
+
+	// Key agreement for PQ
+	tmpKs.group = 0 /*UNUSED*/
+	tmpKs.data = ks.data[x25519SharedSecretSz:]
+	ret = kex.pqKEX.derive(c, tmpKs, key[x25519SharedSecretSz:])
+	if ret == nil {
+		return nil
+	}
+	copy(sharedKey[x25519SharedSecretSz:], ret)
+	return sharedKey[:]
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Temporary deprecated
+// TODO: readd missing curves
+func (c *Config) generateKeyShareOLD(curveID CurveID) ([]byte, keyShare, error) {
+	switch curveID {
+	case X25519:
+		var scalar, public [32]byte
+		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
+			return nil, keyShare{}, err
+		}
+
+		curve25519.ScalarBaseMult(&public, &scalar)
+		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
+	case X448:
+		var scalar, public [56]byte
+		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
+			return nil, keyShare{}, err
+		}
+
+		x448.ScalarBaseMult(&public, &scalar)
+		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
+	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
+		field, ok := fieldForCurveID(curveID)
+		if !ok {
+			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported field")
+		}
+
+		privateKey, pub, err := FieldGenerateKey(field, c.rand())
+		if err != nil {
+			return nil, keyShare{}, err
+		}
+		ecdhePublic := pub.Bytes()
+
+		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
+	default: // curves
+		curve, ok := curveForCurveID(curveID)
+		if !ok {
+			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported curve")
+		}
+
+		privateKey, x, y, err := elliptic.GenerateKey(curve, c.rand())
+		if err != nil {
+			return nil, keyShare{}, err
+		}
+		ecdhePublic := elliptic.Marshal(curve, x, y)
+
+		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
+	}
+}
+
+func deriveECDHESecretOLD(ks keyShare, secretKey []byte) []byte {
+	switch ks.group {
+
+	case X25519:
+		if len(ks.data) != 32 {
+			return nil
+		}
+
+		var theirPublic, sharedKey, scalar [32]byte
+		copy(theirPublic[:], ks.data)
+		copy(scalar[:], secretKey)
+		curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
+		return sharedKey[:]
+	case X448:
+		if len(ks.data) != 56 {
+			return nil
+		}
+
+		var theirPublic, sharedKey, scalar [56]byte
+		copy(theirPublic[:], ks.data)
+		copy(scalar[:], secretKey)
+		x448.ScalarMult(&sharedKey, &scalar, &theirPublic)
+		return sharedKey[:]
+	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
+		field, ok := fieldForCurveID(ks.group)
+		if !ok {
+			return nil
+		}
+
+		fieldSize := field.Size()
+		xBytes := field.Pow(ks.data, secretKey)
+		if len(xBytes) == fieldSize {
+			return xBytes
+		}
+		buf := make([]byte, fieldSize)
+		copy(buf[fieldSize-len(xBytes):], xBytes)
+		return buf
+	default:
+		curve, ok := curveForCurveID(ks.group)
+		if !ok {
+			return nil
+		}
+		x, y := elliptic.Unmarshal(curve, ks.data)
+		if x == nil {
+			return nil
+		}
+		x, _ = curve.ScalarMult(x, y, secretKey)
+		xBytes := x.Bytes()
+		curveSize := (curve.Params().BitSize + 8 - 1) >> 3
+		if len(xBytes) == curveSize {
+			return xBytes
+		}
+		buf := make([]byte, curveSize)
+		copy(buf[len(buf)-len(xBytes):], xBytes)
+		return buf
+	}
+}
+
+func (hs *clientHandshakeState) processCertsFromServer13_DEPR(certMsg *certificateMsg13) error {
+	certs := make([][]byte, len(certMsg.certificates))
+	for i, cert := range certMsg.certificates {
+		certs[i] = cert.data
+	}
+	return hs.processCertsFromServer(certs)
+}
+
+func (hs *clientHandshakeState) verifyPeerCertificate_OLD(certVerify *certificateVerifyMsg) error {
+	if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms) {
+		return fmt.Errorf("tls: unsupported signature algorithm for server certificate: %04x", certVerify.signatureAlgorithm)
+		return errors.New("tls: unsupported signature algorithm for server certificate")
+	}
+	sigHash := hashForSignatureScheme(certVerify.signatureAlgorithm)
+	sigAlg := signatureFromSignatureScheme(certVerify.signatureAlgorithm)
+	pub := hs.c.peerCertificates[0].PublicKey
+	digest := prepareDigitallySigned(sigHash, "TLS 1.3, server CertificateVerify", hs.keySchedule.transcriptHash.Sum(nil))
+	switch key := pub.(type) {
+	case *ecdsa.PublicKey, *x509.AugmentedECDSA:
+		if sigAlg != signature13_ECDSA {
+			return errors.New("tls: bad signature type for server's ECDSA certificate")
+		}
+		ecdsaSig := new(ecdsaSignature)
+		if _, err := asn1.Unmarshal(certVerify.signature, ecdsaSig); err != nil {
+			return err
+		}
+		if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
+			return errors.New("tls: ECDSA signature contained zero or negative values")
+		}
+		pub, ok := key.(*ecdsa.PublicKey)
+		if !ok {
+			pub = key.(*x509.AugmentedECDSA).Pub
+		}
+		if !ecdsa.Verify(pub, digest, ecdsaSig.R, ecdsaSig.S) {
+			return errors.New("tls: ECDSA verification failure")
+		}
+		return nil
+	case *rsa.PublicKey:
+		if sigAlg != signature13_RSAPSS {
+			return errors.New("tls: bad signature type for server's RSA certificate")
+		}
+		signOpts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}
+		return rsa.VerifyPSS(key, sigHash, digest, certVerify.signature, signOpts)
+	default:
+		return errors.New("tls: unsupported certificate type")
+	}
 }

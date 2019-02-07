@@ -50,7 +50,7 @@ const (
 	maxWarnAlertCount = 5            // maximum number of consecutive warning alerts
 
 	minVersion = VersionTLS10
-	maxVersion = VersionTLS12
+	maxVersion = VersionTLS13
 )
 
 // TLS record types.
@@ -69,6 +69,7 @@ const (
 	typeClientHello         uint8 = 1
 	typeServerHello         uint8 = 2
 	typeNewSessionTicket    uint8 = 4
+	typeEndOfEarlyData      uint8 = 5
 	typeHelloRetryRequest   uint8 = 6
 	typeEncryptedExtensions uint8 = 8
 	typeCertificate         uint8 = 11
@@ -90,25 +91,28 @@ const (
 
 // TLS extension numbers
 const (
-	extensionServerName           uint16 = 0
-	extensionStatusRequest        uint16 = 5
-	extensionSupportedCurves      uint16 = 10 // Supported Groups in 1.3 nomenclature
-	extensionSupportedPoints      uint16 = 11
-	extensionSignatureAlgorithms  uint16 = 13
-	extensionALPN                 uint16 = 16
-	extensionSCT                  uint16 = 18 // https://tools.ietf.org/html/rfc6962#section-6
-	extensionExtendedMasterSecret uint16 = 23
-	extensionSessionTicket        uint16 = 35
-	extensionKeySharePre23        uint16 = 40
-	extensionKeyShare23           uint16 = 51
-	extensionPreSharedKey         uint16 = 41
-	extensionEarlyData            uint16 = 42
-	extensionSupportedVersions    uint16 = 43
-	extensionCookie               uint16 = 44
-	extensionPSKKeyExchangeModes  uint16 = 45
-	extensionTicketEarlyDataInfo  uint16 = 46
-	extensionNextProtoNeg         uint16 = 13172 // not IANA assigned
-	extensionRenegotiationInfo    uint16 = 0xff01
+	extensionServerName              uint16 = 0
+	extensionStatusRequest           uint16 = 5
+	extensionSupportedCurves         uint16 = 10 // Supported Groups in 1.3 nomenclature
+	extensionSupportedPoints         uint16 = 11
+	extensionSignatureAlgorithms     uint16 = 13
+	extensionALPN                    uint16 = 16
+	extensionSCT                     uint16 = 18 // https://tools.ietf.org/html/rfc6962#section-6
+	extensionExtendedMasterSecret    uint16 = 23
+	extensionSessionTicket           uint16 = 35
+	extensionKeySharePre23           uint16 = 40
+	extensionKeyShare23              uint16 = 51
+	extensionPreSharedKey            uint16 = 41
+	extensionEarlyData               uint16 = 42
+	extensionSupportedVersions       uint16 = 43
+	extensionCookie                  uint16 = 44
+	extensionPSKKeyExchangeModes     uint16 = 45
+	extensionTicketEarlyDataInfo     uint16 = 46
+	extensionCAs                     uint16 = 47
+	extensionSignatureAlgorithmsCert uint16 = 50
+	extensionNextProtoNeg            uint16 = 13172 // not IANA assigned
+	extensionRenegotiationInfo       uint16 = 0xff01
+	extensionDelegatedCredential     uint16 = 0xff02 // TODO(any) Get IANA assignment
 )
 
 // TLS signaling cipher suite values
@@ -140,6 +144,9 @@ const (
 	FFDHE4096 CurveID = 258
 	FFDHE6144 CurveID = 259
 	FFDHE8192 CurveID = 260
+
+	// Experimental KEX
+	HybridSIDHp503Curve25519 CurveID = 0xFE30
 )
 
 func (curveID *CurveID) MarshalJSON() ([]byte, error) {
@@ -263,12 +270,21 @@ const (
 	hashSHA512 uint8 = 6
 )
 
+// TODO: RENAME back to signature
+// Signature algorithms (for internal signaling use). Starting at 16 to avoid overlap with
+// TLS 1.2 codepoints (RFC 5246, section A.4.1), with which these have nothing to do.
+const (
+	signature13_PKCS1v15 uint8 = iota + 16
+	signature13_ECDSA
+	signature13_RSAPSS
+)
+
 // Signature algorithms for TLS 1.2 (See RFC 5246, section A.4.1)
 const (
-	signatureRSA    uint8 = 1
-	signatureDSA    uint8 = 2
-	signatureECDSA  uint8 = 3
-	signatureRSAPSS uint8 = 4
+	signature12_RSA    uint8 = 1
+	signature12_DSA    uint8 = 2
+	signature12_ECDSA  uint8 = 3
+	signature12_RSAPSS uint8 = 4
 )
 
 // supportedSignatureAlgorithms contains the signature and hash algorithms that
@@ -280,6 +296,22 @@ var supportedSignatureAlgorithms = []SignatureScheme{
 	ECDSAWithP256AndSHA256,
 	PKCS1WithSHA384,
 	ECDSAWithP384AndSHA384,
+	PKCS1WithSHA512,
+	ECDSAWithP521AndSHA512,
+	PKCS1WithSHA1,
+	ECDSAWithSHA1,
+}
+
+// supportedSignatureAlgorithms13 lists the advertised signature algorithms
+// allowed for digital signatures. It includes TLS 1.2 + PSS.
+var supportedSignatureAlgorithms13 = []SignatureScheme{
+	PSSWithSHA256,
+	PKCS1WithSHA256,
+	ECDSAWithP256AndSHA256,
+	PSSWithSHA384,
+	PKCS1WithSHA384,
+	ECDSAWithP384AndSHA384,
+	PSSWithSHA512,
 	PKCS1WithSHA512,
 	ECDSAWithP521AndSHA512,
 	PKCS1WithSHA1,
@@ -300,6 +332,7 @@ type ConnectionState struct {
 	VerifiedChains              []x509.CertificateChain // verified chains built from PeerCertificates
 	SignedCertificateTimestamps [][]byte                // SCTs from the server, if any
 	OCSPResponse                []byte                  // stapled OCSP response from server, if any
+	DelegatedCredential         []byte                  // Delegated credential sent by the server, if any
 
 	// TLSUnique contains the "tls-unique" channel binding value (see RFC
 	// 5929, section 3). For resumed sessions this value will be nil
@@ -343,6 +376,7 @@ type ClientSessionState struct {
 	masterSecret       []byte                  // MasterSecret generated by client on a full handshake
 	serverCertificates []*x509.Certificate     // Certificate chain presented by the server
 	verifiedChains     []x509.CertificateChain // Certificate chains we built for verification
+	useEMS             bool                    // State of extended master secret
 }
 
 // ClientSessionCache is a cache of ClientSessionState objects that can be used
@@ -450,6 +484,10 @@ type ClientHelloInfo struct {
 	// be notified that the 0-RTT data is accepted and it will be made
 	// immediately available for Read.
 	Offered0RTTData bool
+
+	// AcceptsDelegatedCredential is true if the client indicated willingness
+	// to negotiate the delegated credential extension.
+	AcceptsDelegatedCredential bool
 
 	// The Fingerprint is an sequence of bytes unique to this Client Hello.
 	// It can be used to prevent or mitigate 0-RTT data replays as it's
@@ -581,8 +619,9 @@ type Config struct {
 	//
 	// If normal verification fails then the handshake will abort before
 	// considering this callback. If normal verification is disabled by
-	// setting InsecureSkipVerify then this callback will be considered but
-	// the verifiedChains argument will always be nil.
+	// setting InsecureSkipVerify, or (for a server) when ClientAuth is
+	// RequestClientCert or RequireAnyClientCert, then this callback will
+	// be considered but the verifiedChains argument will always be nil.
 	VerifyPeerCertificate func(rawCerts [][]byte, verifiedChains []x509.CertificateChain) error
 
 	// RootCAs defines the set of root certificate authorities
@@ -734,6 +773,26 @@ type Config struct {
 	// Explicitly set Client random
 	ClientRandom []byte
 
+	// AcceptDelegatedCredential is true if the client is willing to negotiate
+	// the delegated credential extension.
+	//
+	// This value has no meaning for the server.
+	//
+	// See https://tools.ietf.org/html/draft-ietf-tls-subcerts-02.
+	AcceptDelegatedCredential bool
+
+	// GetDelegatedCredential returns a DC and its private key for use in the
+	// delegated credential extension. The inputs to the callback are some
+	// information parsed from the ClientHello, as well as the protocol version
+	// selected by the server. This is necessary because the DC is bound to the
+	// protocol version in which it's used. The return value is the raw DC
+	// encoded in the wire format specified in
+	// https://tools.ietf.org/html/draft-ietf-tls-subcerts-02. If the return
+	// value is nil, then the server will not offer negotiate the extension.
+	//
+	// This value has no meaning for the client.
+	GetDelegatedCredential func(*ClientHelloInfo, uint16) ([]byte, crypto.PrivateKey, error)
+
 	// Explicitly set ClientHello with raw data
 	ExternalClientHello []byte
 
@@ -744,6 +803,10 @@ type Config struct {
 	// for new tickets and any subsequent keys can be used to decrypt old
 	// tickets.
 	sessionTicketKeys []ticketKey
+
+	// UseExtendedMasterSecret indicates whether or not the connection
+	// should use the extended master secret computation if available
+	UseExtendedMasterSecret bool
 }
 
 // ticketKeyNameLen is the number of bytes of identifier that is prepended to
@@ -812,7 +875,10 @@ func (c *Config) Clone() *Config {
 		Accept0RTTData:              c.Accept0RTTData,
 		Max0RTTDataSize:             c.Max0RTTDataSize,
 		SessionTicketSealer:         c.SessionTicketSealer,
+		AcceptDelegatedCredential:   c.AcceptDelegatedCredential,
+		GetDelegatedCredential:      c.GetDelegatedCredential,
 		sessionTicketKeys:           sessionTicketKeys,
+		UseExtendedMasterSecret:     c.UseExtendedMasterSecret,
 	}
 }
 
@@ -913,14 +979,13 @@ func (c *Config) cipherSuites() []uint16 {
 	} else if c.maxVersion() >= VersionTLS13 {
 		// Ensure that TLS 1.3 suites are always present, but respect
 		// the application cipher suite preferences.
-		/*
-			s13 := defaultTLS13CipherSuites()
-			if !hasOverlappingCipherSuites(s, s13) {
-				allSuites := make([]uint16, len(s13)+len(s))
-				allSuites = append(allSuites, s13...)
-				s = append(allSuites, s...)
-			}
-		*/
+		s13 := defaultTLS13CipherSuites()
+		if !hasOverlappingCipherSuites(s, s13) {
+			allSuites := make([]uint16, len(s13)+len(s))
+			allSuites = append(allSuites, s13...)
+			s = append(allSuites, s...)
+		}
+
 	}
 	return s
 }
@@ -1334,12 +1399,26 @@ func isSupportedSignatureAlgorithm(sigAlg SignatureScheme, supportedSignatureAlg
 func signatureFromSignatureScheme(signatureAlgorithm SignatureScheme) uint8 {
 	switch signatureAlgorithm {
 	case PKCS1WithSHA1, PKCS1WithSHA256, PKCS1WithSHA384, PKCS1WithSHA512:
-		return signatureRSA
+		return signature12_RSA
 	case PSSWithSHA256, PSSWithSHA384, PSSWithSHA512:
-		return signatureRSAPSS
+		return signature12_RSAPSS
 	case ECDSAWithSHA1, ECDSAWithP256AndSHA256, ECDSAWithP384AndSHA384, ECDSAWithP521AndSHA512:
-		return signatureECDSA
+		return signature12_ECDSA
 	default:
 		return 0
 	}
+}
+
+// TODO(kk): Use variable length encoding?
+func getUint24(b []byte) int {
+	n := int(b[2])
+	n += int(b[1] << 8)
+	n += int(b[0] << 16)
+	return n
+}
+
+func putUint24(b []byte, n int) {
+	b[0] = byte(n >> 16)
+	b[1] = byte(n >> 8)
+	b[2] = byte(n & 0xff)
 }

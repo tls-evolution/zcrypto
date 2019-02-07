@@ -286,7 +286,7 @@ func hashForServerKeyExchange(sigType, hashFunc uint8, version uint16, slices ..
 			return nil, crypto.Hash(0), errors.New("tls: unknown hash function used by peer")
 		}
 	}
-	if sigType == signatureECDSA || sigType == signatureDSA {
+	if sigType == signature12_ECDSA || sigType == signature12_DSA {
 		return sha1Hash(slices), crypto.SHA1, nil
 	}
 	return md5SHA1Hash(slices), crypto.MD5SHA1, nil
@@ -301,9 +301,9 @@ func pickTLS12HashForSignature(keyType uint8, clientList, serverList []Signature
 		// extension then we can assume that it supports SHA1. See
 		// http://tools.ietf.org/html/rfc5246#section-7.4.1.4.1
 		switch keyType {
-		case signatureRSA:
+		case signature12_RSA:
 			return PKCS1WithSHA1, nil
-		case signatureECDSA:
+		case signature12_ECDSA:
 			return ECDSAWithSHA1, nil
 		default:
 			return 0, errors.New("tls: unknown signature algorithm")
@@ -470,7 +470,7 @@ func (ka *signedKeyAgreement) verifyParameters(config *Config, clientHello *clie
 	}
 
 	switch ka.sigType {
-	case signatureECDSA:
+	case signature12_ECDSA:
 		augECDSA, ok := cert.PublicKey.(*x509.AugmentedECDSA)
 		pubKey := augECDSA.Pub
 		if !ok {
@@ -486,7 +486,7 @@ func (ka *signedKeyAgreement) verifyParameters(config *Config, clientHello *clie
 		if !ecdsa.Verify(pubKey, digest, ecdsaSig.R, ecdsaSig.S) {
 			return errors.New("ECDSA verification failure")
 		}
-	case signatureRSA:
+	case signature12_RSA:
 		pubKey, ok := cert.PublicKey.(*rsa.PublicKey)
 		if !ok {
 			return errors.New("ECDHE RSA requires a RSA server public key")
@@ -494,7 +494,7 @@ func (ka *signedKeyAgreement) verifyParameters(config *Config, clientHello *clie
 		if err := rsa.VerifyPKCS1v15(pubKey, hashFunc, digest, sig); err != nil {
 			return err
 		}
-	case signatureDSA:
+	case signature12_DSA:
 		pubKey, ok := cert.PublicKey.(*dsa.PublicKey)
 		if !ok {
 			return errors.New("DSS ciphers require a DSA server public key")
@@ -801,10 +801,10 @@ func (ka *dheKeyAgreement) generateClientKeyExchange(config *Config, clientHello
 func keySupportsSignatureScheme(keyType uint8, signatureAlgorithm SignatureScheme) bool {
 	sigType := signatureFromSignatureScheme(signatureAlgorithm)
 	switch sigType {
-	case signatureRSA, signatureRSAPSS:
-		return keyType == signatureRSA
-	case signatureECDSA:
-		return keyType == signatureECDSA
+	case signature12_RSA, signature12_RSAPSS:
+		return keyType == signature12_RSA
+	case signature12_ECDSA:
+		return keyType == signature12_ECDSA
 	default:
 		return false
 	}

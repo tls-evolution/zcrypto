@@ -9,7 +9,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/subtle"
-	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +32,11 @@ type serverHandshakeState struct {
 	cert                  *Certificate
 	preMasterSecret       []byte
 	hello                 *serverHelloMsg
+	privateKey            crypto.PrivateKey
+
+	// A marshalled DelegatedCredential to be sent to the client in the
+	// handshake.
+	delegatedCredential []byte
 
 	// TLS 1.0-1.2 fields
 	ellipticOk      bool
@@ -301,8 +305,33 @@ Curves:
 		c.sendAlert(alertInternalError)
 		return false, err
 	}
+
+	// Set the private key for this handshake to the certificate's secret key.
+	hs.privateKey = hs.cert.PrivateKey
+
 	if hs.clientHello.scts && hs.hello != nil {
 		hs.hello.scts = hs.cert.SignedCertificateTimestamps
+	}
+
+	// Set the private key to the DC private key if the client and server are
+	// willing to negotiate the delegated credential extension.
+	//
+	// Check to see if a DelegatedCredential is available and should be used.
+	// If one is available, the session is using TLS >= 1.2, and the client
+	// accepts the delegated credential extension, then set the handshake
+	// private key to the DC private key.
+	if c.config.GetDelegatedCredential != nil && hs.clientHello.delegatedCredential && c.vers >= VersionTLS12 {
+		dc, sk, err := c.config.GetDelegatedCredential(hs.clientHelloInfo(), c.vers)
+		if err != nil {
+			c.sendAlert(alertInternalError)
+			return false, err
+		}
+
+		// Set the handshake private key.
+		if dc != nil {
+			hs.privateKey = sk
+			hs.delegatedCredential = dc
+		}
 	}
 
 	if priv, ok := hs.cert.PrivateKey.(crypto.Signer); ok {
@@ -611,64 +640,15 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		}
 
 		// Determine the signature type.
-		var signatureAlgorithm SignatureScheme
-		var sigType uint8
-		if certVerify.hasSignatureAndHash {
-			signatureAlgorithm = certVerify.signatureAlgorithm
-			if !isSupportedSignatureAlgorithm(signatureAlgorithm, supportedSignatureAlgorithms) {
-				return errors.New("tls: unsupported hash function for client certificate")
-			}
-			sigType = signatureFromSignatureScheme(signatureAlgorithm)
-		} else {
-			// Before TLS 1.2 the signature algorithm was implicit
-			// from the key type, and only one hash per signature
-			// algorithm was possible. Leave signatureAlgorithm
-			// unset.
-			switch pub.(type) {
-			case *ecdsa.PublicKey:
-				sigType = signatureECDSA
-			case *rsa.PublicKey:
-				sigType = signatureRSA
-			}
+		_, sigType, hashFunc, err := pickSignatureAlgorithm(pub, []SignatureScheme{certVerify.signatureAlgorithm}, supportedSignatureAlgorithms, c.vers)
+		if err != nil {
+			c.sendAlert(alertIllegalParameter)
+			return err
 		}
 
-		switch key := pub.(type) {
-		case *ecdsa.PublicKey:
-			if sigType != signatureECDSA {
-				err = errors.New("tls: bad signature type for client's ECDSA certificate")
-				break
-			}
-			ecdsaSig := new(ecdsaSignature)
-			if _, err = asn1.Unmarshal(certVerify.signature, ecdsaSig); err != nil {
-				break
-			}
-			if ecdsaSig.R.Sign() <= 0 || ecdsaSig.S.Sign() <= 0 {
-				err = errors.New("tls: ECDSA signature contained zero or negative values")
-				break
-			}
-			var digest []byte
-			if digest, _, err = hs.finishedHash.hashForClientCertificate(signatureAlgorithm, hs.masterSecret); err != nil {
-				break
-			}
-			if !ecdsa.Verify(key, digest, ecdsaSig.R, ecdsaSig.S) {
-				err = errors.New("tls: ECDSA verification failure")
-			}
-		case *rsa.PublicKey:
-			if sigType != signatureRSA {
-				err = errors.New("tls: bad signature type for client's RSA certificate")
-				break
-			}
-			var digest []byte
-			var hashFunc crypto.Hash
-			if digest, hashFunc, err = hs.finishedHash.hashForClientCertificate(signatureAlgorithm, hs.masterSecret); err != nil {
-				break
-			}
-			if sigType == signatureRSAPSS {
-				signOpts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}
-				err = rsa.VerifyPSS(key, hashFunc, digest, certVerify.signature, signOpts)
-			} else {
-				err = rsa.VerifyPKCS1v15(key, hashFunc, digest, certVerify.signature)
-			}
+		var digest []byte
+		if digest, err = hs.finishedHash.hashForClientCertificate(sigType, hashFunc, hs.masterSecret); err == nil {
+			err = verifyHandshakeSignature(sigType, pub, hashFunc, digest, certVerify.signature)
 		}
 		if err != nil {
 			c.sendAlert(alertBadCertificate)

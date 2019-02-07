@@ -144,11 +144,11 @@ type DigitalSignature struct {
 
 func signatureTypeToName(sigType uint8) string {
 	switch sigType {
-	case signatureRSA:
+	case signature12_RSA:
 		return "rsa"
-	case signatureDSA:
+	case signature12_DSA:
 		return "dsa"
-	case signatureECDSA:
+	case signature12_ECDSA:
 		return "ecdsa"
 	default:
 		break
