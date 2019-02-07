@@ -37,6 +37,9 @@ const (
 	VersionTLS13Draft21 = 0x7f00 | 21
 	VersionTLS13Draft22 = 0x7f00 | 22
 	VersionTLS13Draft23 = 0x7f00 | 23
+	VersionTLS13Draft24 = 0x7f00 | 24
+	VersionTLS13Draft25 = 0x7f00 | 25
+	VersionTLS13Draft26 = 0x7f00 | 26
 )
 
 const (
@@ -987,7 +990,7 @@ var configSuppVersArray = [...]uint16{VersionTLS13, VersionTLS12, VersionTLS11, 
 //
 // TODO: remove once TLS 1.3 is finalised.
 var tls13DraftSuppVersArray = [...]uint16{
-	VersionTLS13Draft23,
+	VersionTLS13Draft26, VersionTLS13Draft25, VersionTLS13Draft24, VersionTLS13Draft23,
 	VersionTLS13Draft22, VersionTLS13Draft21, VersionTLS13Draft20, VersionTLS13Draft19,
 	VersionTLS13Draft18, VersionTLS12, VersionTLS11, VersionTLS10, VersionSSL30}
 
@@ -1011,10 +1014,10 @@ func (c *Config) getSupportedVersions() []uint16 {
 		dv := c.maxVersion()
 		if (dv >> 8) == 0x7F {
 			draft := dv & 0xFF
-			if draft > 23 {
-				draft = 23
+			if draft > 26 {
+				draft = 26
 			}
-			return tls13DraftSuppVersArray[23-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
+			return tls13DraftSuppVersArray[26-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
 		}
 		return tls13DraftSuppVersArray[:len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
 	}
