@@ -120,7 +120,7 @@ func newKeySchedule13(suite *cipherSuite, config *Config, clientRandom []byte, v
 func (ks *keySchedule13) setSecret(secret []byte) {
 	hash := hashForSuite(ks.suite)
 	salt := ks.secret
-	if (ks.vers >= VersionTLS13Draft19) && (salt != nil) {
+	if (isAtLeastTLS(ks.vers, VersionTLS13Draft19)) && (salt != nil) {
 		h0 := hash.New().Sum(nil)
 		salt = ks.hkdfExpandLabel(hash, salt, h0, "derived", hash.Size())
 	}
@@ -154,7 +154,7 @@ func (ks *keySchedule13) writeMessageHash(data []byte) {
 }
 
 func (ks *keySchedule13) getLabel(secretLabel secretLabel) (label, keylogType string) {
-	if ks.vers >= VersionTLS13Draft20 {
+	if isAtLeastTLS(ks.vers, VersionTLS13Draft20) {
 		switch secretLabel {
 		case secretResumptionPskBinder:
 			label = "res binder"
@@ -660,7 +660,7 @@ func (c *Conn) deriveDHESecret(ks keyShare, secretKey []byte) []byte {
 
 func (ks *keySchedule13) hkdfExpandLabel(hash crypto.Hash, secret, hashValue []byte, label string, L int) []byte {
 	prefix := "TLS 1.3, "
-	if ks.vers >= VersionTLS13Draft20 {
+	if isAtLeastTLS(ks.vers, VersionTLS13Draft20) {
 		prefix = "tls13 "
 	}
 
@@ -847,7 +847,7 @@ func (hs *serverHandshakeState) sendSessionTicket13() error {
 			maxEarlyDataLength: c.config.Max0RTTDataSize,
 			withEarlyDataInfo:  c.config.Max0RTTDataSize > 0,
 			ageAdd:             sessionState.ageAdd,
-			withNonce:          c.vers >= VersionTLS13Draft21,
+			withNonce:          isAtLeastTLS(c.vers, VersionTLS13Draft21),
 			nonce:              ticketNonce,
 			ticket:             ticket,
 		}
@@ -1022,7 +1022,7 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	c.scts = serverHello.scts
 
 	// Draft22: Middlebox Compatibility Mode
-	if serverHello.vers >= VersionTLS13Draft22 {
+	if isAtLeastTLS(serverHello.vers, VersionTLS13Draft22) {
 		// middlebox compatibility mode, send CCS before second flight.
 		if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
 			return err
@@ -1175,12 +1175,14 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	}
 	hs.keySchedule.write(serverFinished.marshal())
 
-	// Send ChangeCipherSpec (middlebox compatibility).
-	if serverHello.vers >= VersionTLS13Draft22 {
-		if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
-			return err
+	/*
+		// Send ChangeCipherSpec (middlebox compatibility).
+		if isAtLeastTLS(serverHello.vers, VersionTLS13Draft22) {
+			if _, err := c.writeRecord(recordTypeChangeCipherSpec, []byte{1}); err != nil {
+				return err
+			}
 		}
-	}
+	*/
 
 	// Server has authenticated itself. Calculate application traffic secrets.
 	hs.keySchedule.setSecret(nil) // derive master secret

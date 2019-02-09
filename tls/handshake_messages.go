@@ -152,9 +152,9 @@ func (m *clientHelloMsg) marshal() []byte {
 	hasPre23 := false
 	if len(m.supportedVersions) > 0 {
 		for _, v := range m.supportedVersions {
-			if v >= VersionTLS13Draft23 {
+			if isAtLeastTLS(v, VersionTLS13Draft23) {
 				has23 = true
-			} else if v >= VersionTLS13Draft18 {
+			} else if isAtLeastTLS(v, VersionTLS13Draft18) {
 				hasPre23 = true
 			}
 		}

@@ -40,6 +40,8 @@ const (
 	VersionTLS13Draft24 = 0x7f00 | 24
 	VersionTLS13Draft25 = 0x7f00 | 25
 	VersionTLS13Draft26 = 0x7f00 | 26
+	VersionTLS13Draft27 = 0x7f00 | 27
+	VersionTLS13Draft28 = 0x7f00 | 28
 )
 
 const (
@@ -1053,11 +1055,11 @@ var configSuppVersArray = [...]uint16{VersionTLS13, VersionTLS12, VersionTLS11, 
 // tls13DraftSuppVersArray is the backing array of Config.getSupportedVersions
 // with TLS 1.3 draft versions included.
 //
-// TODO: remove once TLS 1.3 is finalised.
 var tls13DraftSuppVersArray = [...]uint16{
+	VersionTLS13Draft28, VersionTLS13Draft27,
 	VersionTLS13Draft26, VersionTLS13Draft25, VersionTLS13Draft24, VersionTLS13Draft23,
 	VersionTLS13Draft22, VersionTLS13Draft21, VersionTLS13Draft20, VersionTLS13Draft19,
-	VersionTLS13Draft18, VersionTLS12, VersionTLS11, VersionTLS10, VersionSSL30}
+	VersionTLS13Draft18}
 
 // getSupportedVersions returns the protocol versions that are supported by the
 // current configuration.
@@ -1074,17 +1076,26 @@ func (c *Config) getSupportedVersions() []uint16 {
 	if maxVersion < minVersion {
 		return nil
 	}
-	// TODO: remove once TLS 1.3 is finalised.
+
 	if maxVersion == VersionTLS13 {
 		dv := c.maxVersion()
+		vers := tls13DraftSuppVersArray[:]
 		if (dv >> 8) == 0x7F {
 			draft := dv & 0xFF
-			if draft > 26 {
-				draft = 26
+			if draft > 28 {
+				draft = 28
 			}
-			return tls13DraftSuppVersArray[26-draft : len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
+			vers = tls13DraftSuppVersArray[28-draft : len(tls13DraftSuppVersArray)]
 		}
-		return tls13DraftSuppVersArray[:len(tls13DraftSuppVersArray)-int(minVersion-VersionSSL30)]
+
+		// add TLS 1.2 and older versions
+		vers = append(vers, configSuppVersArray[1:]...)
+
+		if dv == VersionTLS13 {
+			// include RFC Version
+			vers = append([]uint16{VersionTLS13}, vers...)
+		}
+		return vers
 	}
 	return configSuppVersArray[VersionTLS13-maxVersion : VersionTLS13-minVersion+1]
 }
@@ -1399,11 +1410,11 @@ func isSupportedSignatureAlgorithm(sigAlg SignatureScheme, supportedSignatureAlg
 func signatureFromSignatureScheme(signatureAlgorithm SignatureScheme) uint8 {
 	switch signatureAlgorithm {
 	case PKCS1WithSHA1, PKCS1WithSHA256, PKCS1WithSHA384, PKCS1WithSHA512:
-		return signature12_RSA
+		return signature13_PKCS1v15
 	case PSSWithSHA256, PSSWithSHA384, PSSWithSHA512:
-		return signature12_RSAPSS
+		return signature13_RSAPSS
 	case ECDSAWithSHA1, ECDSAWithP256AndSHA256, ECDSAWithP384AndSHA384, ECDSAWithP521AndSHA512:
-		return signature12_ECDSA
+		return signature13_ECDSA
 	default:
 		return 0
 	}
@@ -1421,4 +1432,22 @@ func putUint24(b []byte, n int) {
 	b[0] = byte(n >> 16)
 	b[1] = byte(n >> 8)
 	b[2] = byte(n & 0xff)
+}
+
+func isAtLeastTLS(vers uint16, minVersion uint16) bool {
+	if vers > 0x7F00 {
+		// draft version was selected as max
+		if minVersion > 0x7F00 {
+			return vers >= minVersion
+		} else {
+			return minVersion < VersionTLS13
+		}
+	} else {
+		// TLS constant was selected as max
+		if minVersion > 0x7F00 {
+			return isAtLeastTLS(vers, VersionTLS13)
+		} else {
+			return vers >= minVersion
+		}
+	}
 }

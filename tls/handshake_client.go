@@ -185,13 +185,15 @@ func (c *Conn) clientHandshake() error {
 		}
 	}
 
-	privateKeys := make(map[CurveID][]byte)
+	hs := &clientHandshakeState{
+		c:       c,
+		hello:   hello,
+		session: session,
+	}
+
 	var clientKS keyShare
 	if c.config.maxVersion() >= VersionTLS13 {
-		// Version preference is indicated via "supported_extensions",
-		// set legacy_version to TLS 1.2 for backwards compatibility.
-		hello.vers = VersionTLS12
-		hello.supportedVersions = c.config.getSupportedVersions()
+		privateKeys := make(map[CurveID][]byte)
 		if c.config.KeysharesFor == nil {
 			// Create one keyshare for the first default curve. If it is not
 			// appropriate, the server should raise a HRR.
@@ -212,22 +214,17 @@ func (c *Conn) clientHandshake() error {
 				return err
 			}
 		}
+		hs.privateKeys = privateKeys
 
 		// Middlebox Compatibility Mode
-		if c.config.maxVersion() >= VersionTLS13Draft22 {
+		// TODO: should be inside hs.handshake()
+		if isAtLeastTLS(c.config.maxVersion(), VersionTLS13Draft22) {
 			hello.sessionId = make([]byte, 32)
 			if _, err = c.config.rand().Read(hello.sessionId); err != nil {
 				c.sendAlert(alertInternalError)
 				return err
 			}
 		}
-	}
-
-	hs := &clientHandshakeState{
-		c:           c,
-		hello:       hello,
-		session:     session,
-		privateKeys: privateKeys,
 	}
 
 	if err = hs.handshake(); err != nil {
@@ -305,7 +302,7 @@ retry:
 		}
 
 		// Draft22+: This may be a HRR message
-		if (vers >= VersionTLS13Draft22) && m.isHelloRetryRequest {
+		if (isAtLeastTLS(vers, VersionTLS13Draft22)) && m.isHelloRetryRequest {
 			// copy cookie
 			if m.cookie != nil {
 				copy(hs.hello.cookie, m.cookie)
@@ -331,7 +328,7 @@ retry:
 	if c.vers >= VersionTLS13 {
 		hs.keySchedule = newKeySchedule13(hs.suite, c.config, hs.hello.random, c.vers)
 		if hrrMsg != nil {
-			if c.vers >= VersionTLS13Draft19 {
+			if isAtLeastTLS(c.vers, VersionTLS13Draft19) {
 				hs.keySchedule.writeMessageHash(hello1)
 				hs.keySchedule.write(hrrMsg)
 			} else {
