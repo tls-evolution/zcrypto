@@ -549,6 +549,8 @@ func (v TLSVersion) String() string {
 		return "TLSv1.1"
 	case 0x0303:
 		return "TLSv1.2"
+	case 0x0304:
+		return "TLSv1.3"
 	case 0x7f00:
 		return "TLSv1.3draft0"
 	case 0x7f01:
@@ -607,12 +609,6 @@ func (v TLSVersion) String() string {
 		return "TLSv1.3draft27"
 	case 0x7f1c:
 		return "TLSv1.3draft28"
-	case 0x7f1d:
-		return "TLSv1.3draft29"
-	case 0x7f1e:
-		return "TLSv1.3draft30"
-	case 0x7f1f:
-		return "TLSv1.3draft31"
 	default:
 		return "unknown"
 	}
