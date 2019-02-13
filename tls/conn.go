@@ -11,7 +11,7 @@ import (
 	"crypto/cipher"
 	"crypto/subtle"
 	"encoding/binary"
-	"encoding/hex"
+	//"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -751,7 +751,6 @@ Again:
 
 	peekedAlert := peekAlert(b) // peek at a possible alert before decryption
 	ok, off, alertValue := c.in.decrypt(b)
-	fmt.Println("@@@decrypt = ", ok)
 	switch {
 	case !ok && c.phase == discardingEarlyData:
 		// If the client said that it's sending early data and we did not
@@ -798,7 +797,7 @@ Again:
 		b.resize(b.off + i) // shrinks, guaranteed not to reallocate
 	}
 
-	fmt.Printf("==>\n%s\n", hex.Dump(data))
+	//fmt.Printf("==>\n%s\n", hex.Dump(data))
 
 	if typ != recordTypeAlert && len(data) > 0 {
 		// this is a valid non-alert message: reset the count of alerts
@@ -1131,7 +1130,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			}
 		}
 		copy(b.data[recordHeaderLen+explicitIVLen:], data)
-		fmt.Printf("<==\n%s\n", hex.Dump(b.data))
+		//fmt.Printf("<==\n%s\n", hex.Dump(b.data))
 		c.out.encrypt(b, explicitIVLen)
 		if _, err := c.write(b.data); err != nil {
 			return n, err
