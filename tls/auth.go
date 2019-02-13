@@ -11,6 +11,8 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+
+	"github.com/zmap/zcrypto/x509"
 )
 
 // pickSignatureAlgorithm selects a signature algorithm that is compatible with
@@ -39,6 +41,7 @@ func pickSignatureAlgorithm(pubkey crypto.PublicKey, peerSigAlgs, ourSigAlgs []S
 		}
 	}
 	for _, sigAlg := range peerSigAlgs {
+
 		if !isSupportedSignatureAlgorithm(sigAlg, ourSigAlgs) {
 			continue
 		}
@@ -58,11 +61,13 @@ func pickSignatureAlgorithm(pubkey crypto.PublicKey, peerSigAlgs, ourSigAlgs []S
 				return sigAlg, sigType, hashAlg, nil
 			}
 		case *ecdsa.PublicKey:
+		case *x509.AugmentedECDSA:
 			if sigType == signature13_ECDSA {
 				return sigAlg, sigType, hashAlg, nil
 			}
 		}
 	}
+
 	return 0, 0, 0, errors.New("tls: peer doesn't support any common signature algorithms")
 }
 
@@ -73,7 +78,11 @@ func verifyHandshakeSignature(sigType uint8, pubkey crypto.PublicKey, hashFunc c
 	case signature13_ECDSA:
 		pubKey, ok := pubkey.(*ecdsa.PublicKey)
 		if !ok {
-			return errors.New("tls: ECDSA signing requires a ECDSA public key")
+			augKey, ok := pubkey.(*x509.AugmentedECDSA)
+			pubKey = augKey.Pub
+			if !ok {
+				return errors.New("tls: ECDSA signing requires a ECDSA public key")
+			}
 		}
 		ecdsaSig := new(ecdsaSignature)
 		if _, err := asn1.Unmarshal(sig, ecdsaSig); err != nil {

@@ -466,6 +466,7 @@ func init() {
 	signatureSchemeNames[uint16(ECDSAWithP521AndSHA512)] = "ecdsa_secp521r1_sha512"
 	signatureSchemeNames[uint16(EdDSAWithEd25519)] = "ed25519"
 	signatureSchemeNames[uint16(EdDSAWithEd448)] = "ed448"
+	signatureSchemeNames[uint16(ECDSAWithSHA1)] = "ecdsa_sha1"
 }
 
 func nameForSignature(s uint8) string {
