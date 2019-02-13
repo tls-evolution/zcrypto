@@ -477,36 +477,42 @@ func (hc *halfConn) encrypt(b *block, explicitIVLen int) (bool, alert) {
 		case cipher.Stream:
 			c.XORKeyStream(payload, payload)
 		case aead:
+			// explicitIVLen is always 0 for TLS1.3
 			payloadLen := len(b.data) - recordHeaderLen - explicitIVLen
-			overhead := c.Overhead()
-			if hc.version >= VersionTLS13 {
-				overhead++
-			}
-			b.resize(len(b.data) + overhead)
-
+			payloadOffset := recordHeaderLen + explicitIVLen
 			nonce := b.data[recordHeaderLen : recordHeaderLen+explicitIVLen]
 			if len(nonce) == 0 {
 				nonce = hc.seq[:]
 			}
-			payload = b.data[recordHeaderLen+explicitIVLen:]
-			payload = payload[:payloadLen]
 
 			var additionalData []byte
 			if hc.version < VersionTLS13 {
+				// make room in a buffer for payload + MAC
+				b.resize(len(b.data) + c.Overhead())
+
+				payload = b.data[payloadOffset : payloadOffset+payloadLen]
 				copy(hc.additionalData[:], hc.seq[:])
 				copy(hc.additionalData[8:], b.data[:3])
-				hc.additionalData[11] = byte(payloadLen >> 8)
-				hc.additionalData[12] = byte(payloadLen)
+				binary.BigEndian.PutUint16(hc.additionalData[11:], uint16(payloadLen))
 				additionalData = hc.additionalData[:]
-			}
+			} else {
+				// make room in a buffer for TLSCiphertext.encrypted_record:
+				// payload + MAC + extra data if needed
+				b.resize(len(b.data) + c.Overhead() + 1)
 
-			if hc.version >= VersionTLS13 {
-				// opaque type
-				payload = payload[:len(payload)+1]
+				payload = b.data[payloadOffset : payloadOffset+payloadLen+1]
+				// 1 byte of content type is appended to payload and encrypted
 				payload[len(payload)-1] = b.data[0]
-				b.data[0] = byte(recordTypeApplicationData)
-			}
 
+				// opaque_type
+				b.data[0] = byte(recordTypeApplicationData)
+
+				// Add AD header, see 5.2 of RFC8446
+				additionalData = make([]byte, 5)
+				additionalData[0] = b.data[0]
+				binary.BigEndian.PutUint16(additionalData[1:], VersionTLS12)
+				binary.BigEndian.PutUint16(additionalData[3:], uint16(len(payload)+c.Overhead()))
+			}
 			c.Seal(payload[:0], nonce, payload, additionalData)
 		case cbcMode:
 			blockSize := c.BlockSize()
@@ -1108,10 +1114,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			// TLS 1.3 froze the record layer version at { 3, 1 }.
 			// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.1.
 			// But for draft 22, this was changed to { 3, 3 }.
-			vers = VersionTLS10
-			if c.vers >= VersionTLS13Draft22 {
-				vers = VersionTLS12
-			}
+			vers = VersionTLS12
 		}
 		b.data[1] = byte(vers >> 8)
 		b.data[2] = byte(vers)
