@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zmap/zcrypto/tls/x448"
 	"github.com/zmap/zcrypto/x509"
 
 	sidh "github.com/cloudflare/sidh/sidh"
@@ -85,6 +84,7 @@ type dhKex interface {
 
 // Key Exchange strategies per curve type
 type kexNist struct{}     // Used by NIST curves; P-256, P-384, P-512
+type kexFDHE struct{}     // Used by FDHE groups
 type kexX25519 struct{}   // Used by X25519
 type kexSIDHp503 struct{} // Used by SIDH/P503
 type kexHybridSIDHp503X25519 struct {
@@ -97,6 +97,11 @@ var dhKexStrat = map[CurveID]dhKex{
 	CurveP256: &kexNist{},
 	CurveP384: &kexNist{},
 	CurveP521: &kexNist{},
+	FFDHE2048: &kexFDHE{},
+	FFDHE3072: &kexFDHE{},
+	FFDHE4096: &kexFDHE{},
+	FFDHE6144: &kexFDHE{},
+	FFDHE8192: &kexFDHE{},
 	X25519:    &kexX25519{},
 	HybridSIDHp503Curve25519: &kexHybridSIDHp503X25519{},
 }
@@ -1052,6 +1057,8 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 
 	// Calculate handshake secrets.
 	hs.keySchedule.setSecret(ecdheSecret)
+	hs.preMasterSecret = hs.keySchedule.secret // log to zgrab
+
 	clientCipher, clientHandshakeSecret := hs.keySchedule.prepareCipher(secretHandshakeClient)
 	serverCipher, serverHandshakeSecret := hs.keySchedule.prepareCipher(secretHandshakeServer)
 	if c.hand.Len() > 0 {
@@ -1185,7 +1192,9 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	*/
 
 	// Server has authenticated itself. Calculate application traffic secrets.
-	hs.keySchedule.setSecret(nil) // derive master secret
+	hs.keySchedule.setSecret(nil)           // derive master secret
+	hs.masterSecret = hs.keySchedule.secret // log to zgrab
+
 	appServerCipher, _ := hs.keySchedule.prepareCipher(secretApplicationServer)
 	appClientCipher, _ := hs.keySchedule.prepareCipher(secretApplicationClient)
 	// TODO store initial traffic secret key for KeyUpdate GH #85
@@ -1367,112 +1376,30 @@ func (kex *kexHybridSIDHp503X25519) derive(c *Conn, ks keyShare, key []byte) []b
 	return sharedKey[:]
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Temporary deprecated
-// TODO: readd missing curves
-func (c *Config) generateKeyShareOLD(curveID CurveID) ([]byte, keyShare, error) {
-	switch curveID {
-	case X25519:
-		var scalar, public [32]byte
-		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
-			return nil, keyShare{}, err
-		}
+// KEX: P-256, P-384, P-512 KEX
+func (kexFDHE) generate(c *Conn, groupId CurveID) (private []byte, ks keyShare, err error) {
+	// never fails
+	field, _ := fieldForCurveID(groupId)
 
-		curve25519.ScalarBaseMult(&public, &scalar)
-		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
-	case X448:
-		var scalar, public [56]byte
-		if _, err := io.ReadFull(c.rand(), scalar[:]); err != nil {
-			return nil, keyShare{}, err
-		}
-
-		x448.ScalarBaseMult(&public, &scalar)
-		return scalar[:], keyShare{group: curveID, data: public[:]}, nil
-	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
-		field, ok := fieldForCurveID(curveID)
-		if !ok {
-			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported field")
-		}
-
-		privateKey, pub, err := FieldGenerateKey(field, c.rand())
-		if err != nil {
-			return nil, keyShare{}, err
-		}
-		ecdhePublic := pub.Bytes()
-
-		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
-	default: // curves
-		curve, ok := curveForCurveID(curveID)
-		if !ok {
-			return nil, keyShare{}, errors.New("tls: preferredCurves includes unsupported curve")
-		}
-
-		privateKey, x, y, err := elliptic.GenerateKey(curve, c.rand())
-		if err != nil {
-			return nil, keyShare{}, err
-		}
-		ecdhePublic := elliptic.Marshal(curve, x, y)
-
-		return privateKey, keyShare{group: curveID, data: ecdhePublic}, nil
+	privateKey, pub, err := FieldGenerateKey(field, c.config.rand())
+	if err != nil {
+		return nil, keyShare{}, err
 	}
+	ecdhePublic := pub.Bytes()
+
+	return privateKey, keyShare{group: groupId, data: ecdhePublic}, nil
 }
-
-func deriveECDHESecretOLD(ks keyShare, secretKey []byte) []byte {
-	switch ks.group {
-
-	case X25519:
-		if len(ks.data) != 32 {
-			return nil
-		}
-
-		var theirPublic, sharedKey, scalar [32]byte
-		copy(theirPublic[:], ks.data)
-		copy(scalar[:], secretKey)
-		curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
-		return sharedKey[:]
-	case X448:
-		if len(ks.data) != 56 {
-			return nil
-		}
-
-		var theirPublic, sharedKey, scalar [56]byte
-		copy(theirPublic[:], ks.data)
-		copy(scalar[:], secretKey)
-		x448.ScalarMult(&sharedKey, &scalar, &theirPublic)
-		return sharedKey[:]
-	case FFDHE2048, FFDHE3072, FFDHE4096, FFDHE6144, FFDHE8192:
-		field, ok := fieldForCurveID(ks.group)
-		if !ok {
-			return nil
-		}
-
-		fieldSize := field.Size()
-		xBytes := field.Pow(ks.data, secretKey)
-		if len(xBytes) == fieldSize {
-			return xBytes
-		}
-		buf := make([]byte, fieldSize)
-		copy(buf[fieldSize-len(xBytes):], xBytes)
-		return buf
-	default:
-		curve, ok := curveForCurveID(ks.group)
-		if !ok {
-			return nil
-		}
-		x, y := elliptic.Unmarshal(curve, ks.data)
-		if x == nil {
-			return nil
-		}
-		x, _ = curve.ScalarMult(x, y, secretKey)
-		xBytes := x.Bytes()
-		curveSize := (curve.Params().BitSize + 8 - 1) >> 3
-		if len(xBytes) == curveSize {
-			return xBytes
-		}
-		buf := make([]byte, curveSize)
-		copy(buf[len(buf)-len(xBytes):], xBytes)
-		return buf
+func (kexFDHE) derive(c *Conn, ks keyShare, secretKey []byte) []byte {
+	// never fails
+	field, _ := fieldForCurveID(ks.group)
+	fieldSize := field.Size()
+	xBytes := field.Pow(ks.data, secretKey)
+	if len(xBytes) == fieldSize {
+		return xBytes
 	}
+	buf := make([]byte, fieldSize)
+	copy(buf[fieldSize-len(xBytes):], xBytes)
+	return buf
 }
 
 func (hs *clientHandshakeState) processCertsFromServer13_DEPR(certMsg *certificateMsg13) error {
