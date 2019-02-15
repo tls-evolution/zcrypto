@@ -1006,7 +1006,8 @@ func (c *Config) maxVersion() uint16 {
 	return c.MaxVersion
 }
 
-var defaultCurvePreferences = []CurveID{X25519, CurveP256, CurveP384, CurveP521}
+var defaultCurvePreferences = []CurveID{X25519, CurveP256, CurveP384, CurveP521,
+	FFDHE8192, FFDHE6144, FFDHE4096, FFDHE3072, FFDHE2048}
 
 func (c *Config) curvePreferences() []CurveID {
 	if c == nil || len(c.CurvePreferences) == 0 {
