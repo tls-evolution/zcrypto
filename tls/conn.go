@@ -780,7 +780,7 @@ Again:
 	// After checking the plaintext length, remove 1.3 padding and
 	// extract the real content type.
 	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.4.
-	if (c.vers >= VersionTLS13) && (typ == recordTypeApplicationData) {
+	if c.vers >= VersionTLS13 {
 		i := len(data) - 1
 		for i >= 0 {
 			if data[i] != 0 {

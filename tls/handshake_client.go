@@ -329,8 +329,8 @@ retry:
 		hs.keySchedule = newKeySchedule13(hs.suite, c.config, hs.hello.random, c.vers)
 		if hrrMsg != nil {
 			if isAtLeastTLS(c.vers, VersionTLS13Draft19) {
-				hs.keySchedule.writeMessageHash(hello1)
-				hs.keySchedule.write(hrrMsg)
+				hs.keySchedule.writeMessageHash(hello1, hrrMsg)
+				hs.keySchedule.write(hrrMsg) // server hrr (hello)
 			} else {
 				hs.keySchedule.write(hello1)
 				hs.keySchedule.write(hrrMsg)
