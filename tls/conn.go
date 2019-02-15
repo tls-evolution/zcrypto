@@ -750,6 +750,7 @@ Again:
 	}
 
 	peekedAlert := peekAlert(b) // peek at a possible alert before decryption
+
 	ok, off, alertValue := c.in.decrypt(b)
 	switch {
 	case !ok && c.phase == discardingEarlyData:
@@ -780,7 +781,7 @@ Again:
 	// After checking the plaintext length, remove 1.3 padding and
 	// extract the real content type.
 	// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.4.
-	if c.vers >= VersionTLS13 {
+	if (c.vers >= VersionTLS13) && (typ == recordTypeApplicationData) {
 		i := len(data) - 1
 		for i >= 0 {
 			if data[i] != 0 {
