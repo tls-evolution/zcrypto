@@ -889,23 +889,34 @@ Again:
 
 			// TLS 1.3: This may be a "New Session Ticket Message"
 			// which is valid any time after the client Finished
-			if c.vers >= VersionTLS13 && data[0] == typeNewSessionTicket {
-				// we need to handle this message OOB as handshake is already finished
-				m := &newSessionTicketMsg13{withNonce: isAtLeastTLS(c.vers, VersionTLS13Draft21)}
-				if unmarshalAlert := m.unmarshal(data); unmarshalAlert != alertSuccess {
-					return c.in.setErrorLocked(c.sendAlert(unmarshalAlert))
-				}
-				// update SessionTicket information
-				c.handshakeLog.SessionTicket = &SessionTicket{
-					Length:             len(m.ticket),
-					Value:              m.ticket,
-					LifetimeHint:       m.lifetime,
-					Nonce:              m.nonce,
-					MaxEarlyDataLength: m.maxEarlyDataLength,
-					AgeAdd:             m.ageAdd,
+			if c.vers >= VersionTLS13 {
+				c.hand.Write(data)
+				for c.hand.Len() > 0 {
+					msg, err := c.readHandshake()
+					if err != nil {
+						return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
+					}
+					m, ok := msg.(*newSessionTicketMsg13)
+					if !ok {
+						return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
+					}
+
+					ticket := &SessionTicket{
+						Length:             len(m.ticket),
+						Value:              m.ticket,
+						LifetimeHint:       m.lifetime,
+						Nonce:              m.nonce,
+						MaxEarlyDataLength: m.maxEarlyDataLength,
+						AgeAdd:             m.ageAdd,
+					}
+					if c.handshakeLog.SessionTicket == nil {
+						c.handshakeLog.SessionTicket = ticket
+					}
+					c.handshakeLog.SessionTickets = append(c.handshakeLog.SessionTickets, *ticket)
 				}
 				goto Again
 			}
+
 			return c.in.setErrorLocked(c.sendAlert(alertNoRenegotiation))
 		}
 		c.hand.Write(data)

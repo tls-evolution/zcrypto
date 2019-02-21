@@ -157,6 +157,7 @@ type ServerHandshake struct {
 	ClientKeyExchange  *ClientKeyExchange `json:"client_key_exchange,omitempty"`
 	ClientFinished     *Finished          `json:"client_finished,omitempty"`
 	SessionTicket      *SessionTicket     `json:"session_ticket,omitempty"`
+	SessionTickets     []SessionTicket    `json:"session_tickets,omitempty"`
 	ServerFinished     *Finished          `json:"server_finished,omitempty"`
 	KeyMaterial        *KeyMaterial       `json:"key_material,omitempty"`
 	PacketEcho         []byte             `json:"echo,omitempty"`
