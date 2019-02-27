@@ -21,6 +21,8 @@ import (
 	"io"
 	"math/big"
 
+	"golang.org/x/crypto/curve25519"
+
 	//"github.com/zmap/rc2"
 	"github.com/zmap/zcrypto/x509"
 )
@@ -531,6 +533,10 @@ type ecdheKeyAgreement struct {
 	serverPrivKey []byte
 	clientX       *big.Int
 	clientY       *big.Int
+
+	// publicKey is used to store the peer's public value when X25519 is
+	// being used.
+	publicKey []byte
 }
 
 func (ka *ecdheKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
@@ -605,22 +611,35 @@ func (ka *ecdheKeyAgreement) processServerKeyExchange(config *Config, clientHell
 	curveid := CurveID(skx.key[1])<<8 | CurveID(skx.key[2])
 	ka.curveID = uint16(curveid)
 
-	var ok bool
-	if ka.curve, ok = curveForCurveID(curveid); !ok {
-		return errors.New("tls: server selected unsupported curve")
-	}
-
 	publicLen := int(skx.key[3])
 	if publicLen+4 > len(skx.key) {
 		return errServerKeyExchange
 	}
-	ka.x, ka.y = elliptic.Unmarshal(ka.curve, skx.key[4:4+publicLen])
-	if ka.x == nil {
-		return errServerKeyExchange
-	}
 	serverECDHParams := skx.key[:4+publicLen]
+	publicKey := serverECDHParams[4:]
 
 	sig := skx.key[4+publicLen:]
+	if len(sig) < 2 {
+		return errServerKeyExchange
+	}
+
+	if curveid == X25519 {
+		if len(publicKey) != 32 {
+			return errors.New("tls: bad X25519 public value")
+		}
+		ka.publicKey = publicKey
+	} else {
+		var ok bool
+		if ka.curve, ok = curveForCurveID(curveid); !ok {
+			return errors.New("tls: server selected unsupported curve")
+		}
+
+		ka.x, ka.y = elliptic.Unmarshal(ka.curve, skx.key[4:4+publicLen])
+		if ka.x == nil {
+			return errServerKeyExchange
+		}
+	}
+
 	ka.verifyError = ka.auth.verifyParameters(config, clientHello, serverHello, cert, serverECDHParams, sig)
 	if config.InsecureSkipVerify {
 		return nil
@@ -629,25 +648,42 @@ func (ka *ecdheKeyAgreement) processServerKeyExchange(config *Config, clientHell
 }
 
 func (ka *ecdheKeyAgreement) generateClientKeyExchange(config *Config, clientHello *clientHelloMsg, cert *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error) {
-	if ka.curve == nil {
-		return nil, nil, errors.New("missing ServerKeyExchange message")
-	}
-	priv, mx, my, err := elliptic.GenerateKey(ka.curve, config.rand())
-	if err != nil {
-		return nil, nil, err
+	if ka.curveID == 0 {
+		return nil, nil, errors.New("tls: missing ServerKeyExchange message")
 	}
 
-	ka.clientPrivKey = make([]byte, len(priv))
-	copy(ka.clientPrivKey, priv)
-	ka.clientX = mx
-	ka.clientY = my
+	var serialized, preMasterSecret []byte
 
-	x, _ := ka.curve.ScalarMult(ka.x, ka.y, priv)
-	preMasterSecret := make([]byte, (ka.curve.Params().BitSize+7)>>3)
-	xBytes := x.Bytes()
-	copy(preMasterSecret[len(preMasterSecret)-len(xBytes):], xBytes)
+	if CurveID(ka.curveID) == X25519 {
+		var ourPublic, theirPublic, sharedKey, scalar [32]byte
 
-	serialized := elliptic.Marshal(ka.curve, mx, my)
+		if _, err := io.ReadFull(config.rand(), scalar[:]); err != nil {
+			return nil, nil, err
+		}
+
+		copy(theirPublic[:], ka.publicKey)
+		curve25519.ScalarBaseMult(&ourPublic, &scalar)
+		curve25519.ScalarMult(&sharedKey, &scalar, &theirPublic)
+		serialized = ourPublic[:]
+		preMasterSecret = sharedKey[:]
+	} else {
+		priv, mx, my, err := elliptic.GenerateKey(ka.curve, config.rand())
+		if err != nil {
+			return nil, nil, err
+		}
+
+		ka.clientPrivKey = make([]byte, len(priv))
+		copy(ka.clientPrivKey, priv)
+		ka.clientX = mx
+		ka.clientY = my
+
+		x, _ := ka.curve.ScalarMult(ka.x, ka.y, priv)
+		preMasterSecret = make([]byte, (ka.curve.Params().BitSize+7)>>3)
+		xBytes := x.Bytes()
+		copy(preMasterSecret[len(preMasterSecret)-len(xBytes):], xBytes)
+
+		serialized = elliptic.Marshal(ka.curve, mx, my)
+	}
 
 	ckx := new(clientKeyExchangeMsg)
 	var body []byte
