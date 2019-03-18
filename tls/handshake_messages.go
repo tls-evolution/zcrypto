@@ -50,6 +50,8 @@ type clientHelloMsg struct {
 	alpnProtocols                    []string
 	unknownExtensions                [][]byte
 	keyShares                        []keyShare
+	keySharesRetryPre23              []keyShare
+	keySharesRetry                   []keyShare
 	supportedVersions                []uint16
 	psks                             []psk
 	pskKeyExchangeModes              []uint8
@@ -137,6 +139,8 @@ func (m *clientHelloMsg) equal(i interface{}) bool {
 		eqStrings(m.alpnProtocols, m1.alpnProtocols) &&
 		reflect.DeepEqual(m.unknownExtensions, m1.unknownExtensions) &&
 		eqKeyShares(m.keyShares, m1.keyShares) &&
+		eqKeyShares(m.keySharesRetry, m1.keySharesRetry) &&
+		eqKeyShares(m.keySharesRetryPre23, m1.keySharesRetryPre23) &&
 		eqUint16s(m.supportedVersions, m1.supportedVersions) &&
 		bytes.Equal(m.cookie, m1.cookie) &&
 		m.earlyData == m1.earlyData &&
@@ -225,18 +229,27 @@ func (m *clientHelloMsg) marshal() []byte {
 			extensionsLength += len(ext)
 		}
 	}
-	addExtensionFun := func() {
+	addExtensionFun := func(ks []keyShare) {
 		extensionsLength += 2
-		for _, k := range m.keyShares {
+		for _, k := range ks {
 			extensionsLength += 4 + len(k.data)
 		}
 		numExtensions++
 	}
 
 	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
-		addExtensionFun()
+		if len(m.keySharesRetry) > 0 {
+			addExtensionFun(m.keySharesRetry)
+		} else {
+			addExtensionFun(m.keyShares)
+		}
 		if has23 && hasPre23 {
-			addExtensionFun() // add extension twice
+			// add extension twice
+			if len(m.keySharesRetryPre23) > 0 {
+				addExtensionFun(m.keySharesRetryPre23)
+			} else {
+				addExtensionFun(m.keyShares)
+			}
 		}
 	}
 
@@ -471,7 +484,7 @@ func (m *clientHelloMsg) marshal() []byte {
 			z = z[len(ext):]
 		}
 	}
-	addKeyshareFun := func(extensionKeyShare uint16) {
+	addKeyshareFun := func(extensionKeyShare uint16, shares []keyShare) {
 		// https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-4.2.5
 		z[0] = byte(extensionKeyShare >> 8)
 		z[1] = byte(extensionKeyShare)
@@ -479,7 +492,7 @@ func (m *clientHelloMsg) marshal() []byte {
 		z = z[6:]
 
 		totalLength := 0
-		for _, ks := range m.keyShares {
+		for _, ks := range shares {
 			z[0] = byte(ks.group >> 8)
 			z[1] = byte(ks.group)
 			z[2] = byte(len(ks.data) >> 8)
@@ -497,10 +510,18 @@ func (m *clientHelloMsg) marshal() []byte {
 	}
 	if (len(m.keyShares) > 0) || (len(m.supportedVersions) > 0) {
 		if hasPre23 {
-			addKeyshareFun(extensionKeySharePre23)
+			if len(m.keySharesRetryPre23) > 0 {
+				addKeyshareFun(extensionKeySharePre23, m.keySharesRetryPre23)
+			} else {
+				addKeyshareFun(extensionKeySharePre23, m.keyShares)
+			}
 		}
 		if has23 {
-			addKeyshareFun(extensionKeyShare23)
+			if len(m.keySharesRetry) > 0 {
+				addKeyshareFun(extensionKeyShare23, m.keySharesRetry)
+			} else {
+				addKeyshareFun(extensionKeyShare23, m.keyShares)
+			}
 		}
 	}
 
@@ -1382,7 +1403,7 @@ func (m *serverHelloMsg) unmarshal(data []byte) alert {
 			m.psk = true
 			m.pskIdentity = uint16(data[0])<<8 | uint16(data[1])
 		case extensionCookie:
-			copy(m.cookie, data[0:length-1]) // copy includes length prefix
+			m.cookie = append(data[:0:0], data[2:length]...)
 		default:
 			fullExt := append(fullData[:4], data[:length]...)
 			m.unknownExtensions = append(m.unknownExtensions, fullExt)
@@ -1609,7 +1630,7 @@ func (m *helloRetryRequestMsg) unmarshal(data []byte) alert {
 		default:
 			return alertDecodeError
 		case extensionCookie:
-			copy(m.cookie, data[0:length-1]) // copy includes length prefix
+			copy(m.cookie, data[2:length])
 		case extensionKeySharePre23, extensionKeyShare23:
 			//  draft-ietf-tls-tls13.html#key-share contains only group for hello_retry
 			if length != 2 {

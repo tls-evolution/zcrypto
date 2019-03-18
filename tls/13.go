@@ -1042,6 +1042,13 @@ func (hs *clientHandshakeState) doTLS13Handshake() error {
 	// TODO check if keyshare is unacceptable, raise HRR.
 
 	clientKS := hs.hello.keyShares[0]
+	if len(hs.hello.keySharesRetryPre23) > 0 {
+		clientKS = hs.hello.keySharesRetryPre23[0]
+	}
+	if len(hs.hello.keySharesRetry) > 0 {
+		clientKS = hs.hello.keySharesRetry[0]
+	}
+
 	if serverHello.keyShare.group != clientKS.group {
 		c.sendAlert(alertIllegalParameter)
 		return errors.New("bad or missing key share from server")

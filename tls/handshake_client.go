@@ -271,7 +271,7 @@ retry:
 	}
 
 	// generate new stuff here
-	regenerateKeyshare := func(group CurveID, hrr []byte) error {
+	regenerateKeyshare := func(group CurveID, hrr []byte, pre23 bool) error {
 		privateKey, clientKS, err := c.generateKeyShare(group)
 		if err != nil {
 			c.sendAlert(alertInternalError)
@@ -279,7 +279,13 @@ retry:
 		}
 
 		hs.privateKeys = map[CurveID][]byte{group: privateKey}
-		hs.hello.keyShares = []keyShare{clientKS}
+
+		if pre23 {
+			hs.hello.keySharesRetryPre23 = []keyShare{clientKS}
+		} else {
+			hs.hello.keySharesRetry = []keyShare{clientKS}
+		}
+
 		hello1 = hs.hello.marshal()
 		hs.hello.raw = nil // prevent using outdated, cached copy
 		hrrMsg = hrr
@@ -303,18 +309,19 @@ retry:
 
 		// Draft22+: This may be a HRR message
 		if (isAtLeastTLS(vers, VersionTLS13Draft22)) && m.isHelloRetryRequest {
+			fmt.Println("@@@@@ GOT HRR with cookie:", m.cookie)
 			// copy cookie
 			if m.cookie != nil {
-				copy(hs.hello.cookie, m.cookie)
+				hs.hello.cookie = append([]byte(nil), m.cookie...)
 			}
-			regenerateKeyshare(m.keyShare.group, m.marshal())
+			regenerateKeyshare(m.keyShare.group, m.marshal(), false)
 			goto retry
 		}
 	case *helloRetryRequestMsg:
 		if m.cookie != nil {
-			copy(hs.hello.cookie, m.cookie)
+			hs.hello.cookie = append([]byte(nil), m.cookie...)
 		}
-		regenerateKeyshare(m.keyShare.group, m.marshal())
+		regenerateKeyshare(m.keyShare.group, m.marshal(), true)
 		goto retry
 	default:
 		c.sendAlert(alertUnexpectedMessage)
