@@ -309,7 +309,6 @@ retry:
 
 		// Draft22+: This may be a HRR message
 		if (isAtLeastTLS(vers, VersionTLS13Draft22)) && m.isHelloRetryRequest {
-			fmt.Println("@@@@@ GOT HRR with cookie:", m.cookie)
 			// copy cookie
 			if m.cookie != nil {
 				hs.hello.cookie = append([]byte(nil), m.cookie...)
