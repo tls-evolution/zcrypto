@@ -7,6 +7,7 @@ package tls
 import (
 	"container/list"
 	"crypto"
+
 	//"crypto/internal/cipherhw"
 	"crypto/rand"
 	"crypto/rsa"
@@ -149,6 +150,7 @@ const (
 
 	// Experimental KEX
 	HybridSIDHp503Curve25519 CurveID = 0xFE30
+	HybridSIKEp503Curve25519 CurveID = 0xFE32
 )
 
 func (curveID *CurveID) MarshalJSON() ([]byte, error) {
@@ -1007,6 +1009,7 @@ func (c *Config) maxVersion() uint16 {
 }
 
 var defaultCurvePreferences = []CurveID{X25519, CurveP256, CurveP384, CurveP521,
+	HybridSIDHp503Curve25519, HybridSIKEp503Curve25519,
 	FFDHE8192, FFDHE6144, FFDHE4096, FFDHE3072, FFDHE2048}
 
 func (c *Config) curvePreferences() []CurveID {
