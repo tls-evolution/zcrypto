@@ -1129,7 +1129,11 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			// TLS 1.3 froze the record layer version at { 3, 1 }.
 			// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.1.
 			// But for draft 22, this was changed to { 3, 3 }.
-			vers = VersionTLS12
+			if isAtLeastTLS(c.vers, VersionTLS13Draft22) {
+				vers = VersionTLS10
+			} else {
+				vers = VersionTLS12
+			}
 		}
 		b.data[1] = byte(vers >> 8)
 		b.data[2] = byte(vers)
