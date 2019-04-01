@@ -371,10 +371,12 @@ func (hc *halfConn) decrypt(b *block) (ok bool, prefixLen int, alertValue alert)
 					return false, 0, alertRecordOverflow
 				}
 				// Check AD header, see 5.2 of RFC8446
-				additionalData = make([]byte, 5)
-				additionalData[0] = byte(recordTypeApplicationData)
-				binary.BigEndian.PutUint16(additionalData[1:], VersionTLS12)
-				binary.BigEndian.PutUint16(additionalData[3:], uint16(len(payload)))
+				if isAtLeastTLS(hc.version, VersionTLS13Draft25) {
+					additionalData = make([]byte, 5)
+					additionalData[0] = byte(recordTypeApplicationData)
+					binary.BigEndian.PutUint16(additionalData[1:], VersionTLS12)
+					binary.BigEndian.PutUint16(additionalData[3:], uint16(len(payload)))
+				}
 			}
 			var err error
 			payload, err = c.Open(payload[:0], nonce, payload, additionalData)
@@ -508,10 +510,12 @@ func (hc *halfConn) encrypt(b *block, explicitIVLen int) (bool, alert) {
 				b.data[0] = byte(recordTypeApplicationData)
 
 				// Add AD header, see 5.2 of RFC8446
-				additionalData = make([]byte, 5)
-				additionalData[0] = b.data[0]
-				binary.BigEndian.PutUint16(additionalData[1:], VersionTLS12)
-				binary.BigEndian.PutUint16(additionalData[3:], uint16(len(payload)+c.Overhead()))
+				if isAtLeastTLS(hc.version, VersionTLS13Draft25) {
+					additionalData = make([]byte, 5)
+					additionalData[0] = b.data[0]
+					binary.BigEndian.PutUint16(additionalData[1:], VersionTLS12)
+					binary.BigEndian.PutUint16(additionalData[3:], uint16(len(payload)+c.Overhead()))
+				}
 			}
 			c.Seal(payload[:0], nonce, payload, additionalData)
 		case cbcMode:
