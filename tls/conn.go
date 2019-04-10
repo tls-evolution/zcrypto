@@ -1130,9 +1130,9 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			// See https://tools.ietf.org/html/draft-ietf-tls-tls13-18#section-5.1.
 			// But for draft 22, this was changed to { 3, 3 }.
 			if isAtLeastTLS(c.vers, VersionTLS13Draft22) {
-				vers = VersionTLS10
-			} else {
 				vers = VersionTLS12
+			} else {
+				vers = VersionTLS10
 			}
 		}
 		b.data[1] = byte(vers >> 8)
